@@ -1,0 +1,9 @@
+apiVersion: ci.example.com/v1alpha1
+kind: PipelineJobTemplate
+metadata:
+  labels:
+    app.kubernetes.io/name: k8s-pipeline-controller
+    app.kubernetes.io/managed-by: kustomize
+  name: pipelinejobtemplate-sample
+spec:
+  # TODO(user): Add fields here
