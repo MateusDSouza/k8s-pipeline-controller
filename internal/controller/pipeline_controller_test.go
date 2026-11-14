@@ -55,6 +55,11 @@ var _ = Describe("Pipeline Controller", func() {
 						Namespace: resourceNamespace,
 					},
 					// TODO(user): Specify other spec details if needed.
+					Spec: civ1alpha1.PipelineSpec{
+						Jobs: []civ1alpha1.PipelineJob{
+							{Name: "build", TemplateRef: "build"},
+						},
+					},
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
