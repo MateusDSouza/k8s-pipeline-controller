@@ -28,3 +28,7 @@ var (
 func init() { // this is a special go function that runs before main is called and automatically register those variables and let them be called
 	ctrlmetrics.Registry.MustRegister(PipelinesStarted, PipelinesFinished, PipelineDuration)
 }
+
+// We send those metrics directly to the controller-runtime prometheus registry, so those are available as other default metrics via the same endpoint - we achieve this by using the ctrlmetrics.
+// The MustRegister is a way to crash the execution if those are not registered in the controller-runtime
+// So, the endpoint belongs to the controller process and it is available in the pod for prometheus to scrap ->  prometheus pull those metrics once reach the endpoint -> GET /metrics

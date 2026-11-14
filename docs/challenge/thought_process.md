@@ -556,3 +556,71 @@ reconcile #5  Job 1 completed    states: {0: ok, 1: ok}  → succeed          ph
 - New template [deploy](../../config/samples/ci_v1alpha1_pipelinejobtemplate_deploy.yaml) (added to the kustomization).
 - [release-1](../../config/samples/ci_v1alpha1_pipeline.yaml) now has two jobs: build → deploy.
 - [examples/fail-fast.yaml](../../examples/fail-fast.yaml): the first job fails, the second must never be created.
+
+## 4. Observability
+
+### Metrics
+
+To begin with the observability lets tackle the metrics. We know that prometheus reaches the /metrics endpoint of the pod and uses a pull strategy to scrap the metrics.
+An user of this controller would like to know metrics related to k8s pods, jobs, containers - but in the case of the pipelines, it would also want to know when the pipeline started and when it ends, how long did it take, how many of them succeed and how many failed, and so on...
+So, if we can translate this we have:
+- traffic (started)
+- errors (failed)
+- latency (duration)
+
+By deciding for the simplicity we can take advantage of the controller-runtime registry that serves metrics at the same endpoint as the built-in ones - so prometheus just need to pull the metrics from the controller pod endpoint /metrics.
+
+So the implementation of those variables that are then send to the register are in the file [text](../../internal/metrics/metrics.go).
+
+But now we have a second problem -> the reconcile is doing several calls to check the status of a pipeline, which means that if in every cycle it tries to talk with the pipeline and increment our counters, we would have messy metrics. Thats why the way of measuring things is to always count the transition of the state of the pipeline.
+We have the function setPhase that is responsible to change the phase of a run, but this is a pure function and by the best practices shouldnt be poluted, that why it is better to have another function to be able to record those values!
+
+This implementation is in [text](../../internal/controller/transitions.go).
+
+With this modularity we just need to add this function call in the right after we have a transition in the reconcile loop.
+
+- Now lets run it against kind using the script and see the results:
+
+In a terminal:
+```sh
+cd /Users/mateus.desouza/Desktop/k8s-pipeline-controller
+scripts/dev.sh up                 # cluster + CRDs
+scripts/dev.sh run                # terminal 1: controller with metrics
+```
+In a second terminal:
+```sh
+cd /Users/mateus.desouza/Desktop/k8s-pipeline-controller
+scripts/dev.sh metrics            # one full dry run: pulls busybox, warms everything up
+scripts/dev.sh reset              # clean slate for the live demo
+```
+
+After the execution:
+```sh
+curl -s localhost:8080/metrics | grep '^pipeline_controller'
+```
+
+### Logging
+
+The challenge asks for **structured, contextual logging**:
+- **Structured**: each log line has a message plus separate key/value fields
+  (`log.Info("created job", "job", job.Name)`), instead of values mixed into a sentence.
+- **Contextual**: each line automatically says what it belongs to.
+
+**How it works.** The code logs through **logr** (an interface) and **zap** (the library that
+formats and writes the lines), set up by kubebuilder in `cmd/main.go`. Before calling `Reconcile`,
+controller-runtime creates a logger that already contains the controller name, the pipeline's name
+and namespace, and a unique `reconcileID`, and passes it in the `ctx`. We get it with
+`logf.FromContext(ctx)`.
+
+**What I log** (only events, not every reconcile):
+
+| Where                                 | Message                  | Fields                    |
+| ------------------------------------- | ------------------------ | ------------------------- |
+| `Reconcile`, when a Job is created    | `created job`            | job, index, template      |
+| `recordTransition` (`transitions.go`) | `pipeline phase changed` | from, to, reason, message |
+
+Errors are not logged in the code: they are wrapped with context (`fmt.Errorf("create job %s: %w", ...)`)
+and returned.
+
+**JSON by default.** In `cmd/main.go` -> `Development: false`, so the output is JSON (info level,
+stack traces only on errors). In production, logs are collected into systems like Grafana Loki and JSON let it filter by field.
