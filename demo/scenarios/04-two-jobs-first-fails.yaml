@@ -1,0 +1,9 @@
+# 2 jobs, the first fails -> Failed, deploy Skipped (its Job is never created)
+apiVersion: ci.example.com/v1alpha1
+kind: Pipeline
+metadata:
+  name: two-jobs-first-fails
+spec:
+  jobs:
+    - {name: build, templateRef: broken}
+    - {name: deploy, templateRef: deploy}

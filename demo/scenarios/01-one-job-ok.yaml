@@ -1,0 +1,8 @@
+# 1 job that succeeds -> Succeeded
+apiVersion: ci.example.com/v1alpha1
+kind: Pipeline
+metadata:
+  name: one-job-ok
+spec:
+  jobs:
+    - {name: build, templateRef: build}
