@@ -1,0 +1,10 @@
+# 3 jobs that succeed -> Succeeded
+apiVersion: ci.example.com/v1alpha1
+kind: Pipeline
+metadata:
+  name: three-jobs-ok
+spec:
+  jobs:
+    - {name: build, templateRef: build}
+    - {name: test, templateRef: test}
+    - {name: deploy, templateRef: deploy}

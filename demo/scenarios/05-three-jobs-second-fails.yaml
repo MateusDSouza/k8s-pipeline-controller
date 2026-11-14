@@ -1,0 +1,10 @@
+# 3 jobs, the second fails -> Failed, deploy Skipped
+apiVersion: ci.example.com/v1alpha1
+kind: Pipeline
+metadata:
+  name: three-jobs-second-fails
+spec:
+  jobs:
+    - {name: build, templateRef: build}
+    - {name: test, templateRef: broken}
+    - {name: deploy, templateRef: deploy}

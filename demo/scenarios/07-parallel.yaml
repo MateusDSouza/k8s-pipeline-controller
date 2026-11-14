@@ -1,0 +1,18 @@
+# 2 pipelines at the same time: parallel-a succeeds, parallel-b fails in its second job
+apiVersion: ci.example.com/v1alpha1
+kind: Pipeline
+metadata:
+  name: parallel-a
+spec:
+  jobs:
+    - {name: build, templateRef: build}
+    - {name: deploy, templateRef: deploy}
+---
+apiVersion: ci.example.com/v1alpha1
+kind: Pipeline
+metadata:
+  name: parallel-b
+spec:
+  jobs:
+    - {name: build, templateRef: build}
+    - {name: deploy, templateRef: broken}

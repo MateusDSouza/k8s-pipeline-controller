@@ -1,0 +1,8 @@
+# 1 job that fails -> Failed
+apiVersion: ci.example.com/v1alpha1
+kind: Pipeline
+metadata:
+  name: one-job-fail
+spec:
+  jobs:
+    - {name: build, templateRef: broken}
