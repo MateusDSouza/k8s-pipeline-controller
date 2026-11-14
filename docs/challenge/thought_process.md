@@ -301,3 +301,184 @@ Pipeline
           ├── jobName ── points to ──▶ Kubernetes Job (created by the controller)
           └── phase, startTime, completionTime
 ```
+
+Create the PR to solidify this development, squash in main:
+
+```sh
+gh pr create --base main --head implement-api-types --title "feat(api-types): add Pipeline and PipelineJobTemplate types" \
+  --body "define the CRD types and validation."
+
+ gh pr merge --squash --delete-branch
+```
+
+
+## 3. Reconcilier
+
+Following the template scaffolded by kubebuild and remembering that PipelineJobTemplate has the flag for the controller  = false, we only need to implement the reconcilier for the Pipeline object. The reconcilier is a function that is responsible to do API calls to the kubernetes API. What our reconcilier will do is simple: everytime something changes in a Pipeline or in a Job it owns (it looks to what we have in the status of the Pipeline and compares with the Spec) the controller calls the reconcilier and the reconcilier needs to decide the next action.
+
+By this project, what is the logic behind our pipeline:
+
+```sh
+1. Get the Pipeline              → gone? return (nothing to do)
+2. Already Succeeded/Failed?     → return (finished)
+3. For each spec.jobs[i], in order:
+     look for its Kubernetes Job (name: <pipeline>-<i>)
+     ├─ doesn't exist      → get template, build Job, create it, phase=Running → return
+     ├─ still running      → return (wait; the Job's next change triggers a new reconcile)
+     ├─ failed             → phase=Failed → return
+     └─ succeeded          → continue to i+1
+4. All jobs succeeded            → phase=Succeeded → return
+```
+
+So, each reconcile cycle does one step and returns -> the pipeline moves forward across many api calls.
+
+```sh
+reconcile #1: no Job yet          → create build-app-0, phase=Running
+reconcile #2: build-app-0 running → nothing to do
+reconcile #3: build-app-0 done    → create build-app-1
+reconcile #4: build-app-1 done    → phase=Succeeded
+```
+
+Now lets implement this logic inside: [text](../../internal/controller/pipeline_controller.go)
+
+### Implementation
+First we need to create a function that will be responsible for making a PipelineJobTemplate as a real kubernetes job -> [text](../../internal/controller/job_builder.go)
+Following the code standards of golang imposed by kubebuilder, we have the test file in the same directory as the implementation -> [text](../../internal/controller/job_builder_test.go)
+The test framework detect files with the _test.go suffix and execute them as tests. At this point we will follow a methodology where we will develop unit tests together with the development of new functions, we will use the built in test framework of golang.
+
+The function buildJob in the job_builder.go file uses native kubernetes api libraries to execute the creation of containers and run pods based on the jobs it receives - for further documentation comments are in each line of the function.
+
+#### Unit tests (`internal/controller/job_builder_test.go`)
+
+| Test                            | Verifies                                                                                                            |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `TestJobName`                   | Job name format is `<pipeline>-<index>-<job>`                                                                       |
+| `TestJobName_IsDeterministic`   | Same inputs always give the same name, so the controller finds Jobs it created before                               |
+| `TestJobName_UniquePerIndex`    | Different indexes in the same pipeline never share a name                                                           |
+| `TestJobName_Length`            | Every name is a valid DNS-1123 label (≤ 63 chars). **Known issue:** the two long cases fail with the current format |
+| `TestBuildJob_Metadata`         | Job name, namespace, and pipeline/index labels on the Job and its Pod                                               |
+| `TestBuildJob_StepsOrder`       | Steps keep their order: all but the last become init containers, the last is the main container (1, 2 and 3 steps)  |
+| `TestBuildJob_CopiesStepFields` | Each step's image, command, args and env are copied to its container                                                |
+| `TestBuildJob_SharedWorkspace`  | One `emptyDir` volume, mounted at the same path in every container and used as the working directory                |
+| `TestBuildJob_NoRetries`        | `backoffLimit: 0` and `restartPolicy: Never`, so a failing step fails the Job once                                  |
+| `TestBuildJob_LabelsAreValid`   | Label values are valid, even with a 63-character pipeline name                                                      |
+
+To execute the tests:
+```sh
+cd /Users/mateus.desouza/Desktop/k8s-pipeline-controller
+go test -v -run 'TestJobName|TestBuildJob' ./internal/controller/
+```
+
+- Before moving forward with the development of the reconciler it is better to fix this naming length problem so that once we arrive to the execute integration tests and e2e tests we already have a problem covered. This is one huge advantage of executing unit tests before shipping.
+- In this point of the development we have two main choices of design this solution:
+  - rely on go coding
+  - rely on kubebuilder markers
+- **my decision is to rely on the kubebuilder markers because I prefer to introduce a limitation in the infrastructure rather than a workaround in the code**
+```go
+// I will introduce this rule on the Pipeline so that the kubernetes API output the error in when trying to apply the manifest.
+// The + 4 covers the two hyphens and up to two index digits, which works because MaxItems=50 -> each Pipeline can have a maximum number of 50 PipelineJobs.
+// +kubebuilder:validation:XValidation:rule="self.spec.jobs.all(j, self.metadata.name.size() + j.name.size() + 4 <= 63)",message="pipeline name + job name must be at most 59 characters"
+```
+
+Now we need to generate the manifests once again to get the changes.
+Good also to test this against the envtest server - integration.
+
+```sh
+cd /Users/mateus.desouza/Desktop/k8s-pipeline-controller
+make generate manifests
+make test
+```
+
+The unit tests cases in [text](../../internal/controller/job_builder_test.go) were adjusted to cover the different scenarios and respecting the limit of 63 characters per kubernetes job names.
+As the solution was implemented in the infrastructure side, it is good to also implement some integration tests agains the envtest server using the ginkgo - the default integration test framework used by kubebuilder.
+Tests implemented in [text](../../internal/controller/pipeline_controller_test.go).
+
+- Now that we have the job_builder implemented, tested unitary and with a couple of integration tests to ensure that the naming length is respected, time to go for the reconcilier implementation. Following the kubebuilder guide, in the file [text](../../internal/controller/pipeline_controller.go) we have the Reconcile() function with our TODO's.
+
+Without the proper RBAC markers our operator would be able to communicate with the kubernetes API - Every r.Get, r.List and r.Create in this function is a request to the API server made as your operator’s ServiceAccount. RBAC denies everything by default, so each kind of call needs a rule.
+
+
+Lets try to run everything on a local kind cluster now:
+
+```sh
+##kind create cluster --name pipeline-dev # create another kind cluster
+cd /Users/mateus.desouza/Desktop/k8s-pipeline-controller
+make install # install cdrs in the cluster
+make run # runs the controller
+
+#make sure that the correct context is being used
+kubectl config use-context kind-pipeline-dev 
+kubectl config current-context
+```
+Result:
+
+```sh
+2026-11-14T14:02:33+01:00       INFO    setup   Starting manager
+2026-11-14T14:02:33+01:00       INFO    starting server {"name": "health probe", "addr": "[::]:8081"}
+2026-11-14T14:02:33+01:00       INFO    Starting EventSource    {"controller": "pipeline", "controllerGroup": "ci.example.com", "controllerKind": "Pipeline", "source": "kind source: *v1alpha1.Pipeline"}
+2026-11-14T14:02:33+01:00       INFO    Starting EventSource    {"controller": "pipeline", "controllerGroup": "ci.example.com", "controllerKind": "Pipeline", "source": "kind source: *v1.Job"}
+2026-11-14T14:02:33+01:00       INFO    Starting Controller     {"controller": "pipeline", "controllerGroup": "ci.example.com", "controllerKind": "Pipeline"}
+2026-11-14T14:02:33+01:00       INFO    Starting workers        {"controller": "pipeline", "controllerGroup": "ci.example.com", "controllerKind": "Pipeline", "worker count": 1}
+```
+Now, we need to prepare the sample files to test our operator -> [text](../../config/samples/ci_v1alpha1_pipeline.yaml) and [text](../../config/samples/ci_v1alpha1_pipelinejobtemplate.yaml).
+
+For testing we will use the dummy job - 1 job with 2 steps the image used is the 
+```yaml
+apiVersion: ci.example.com/v1alpha1
+kind: PipelineJobTemplate
+metadata:
+  name: build
+spec:
+  steps:
+    - name: checkout
+      image: busybox #tiny default image with linux just for testing
+      command: ["sh", "-c", "echo cloning && sleep 2"]
+    - name: test
+      image: busybox
+      command: ["sh", "-c", "echo testing && sleep 2"]
+```
+
+And the dummy pipeline referencing the same job by name - build:
+```yaml
+apiVersion: ci.example.com/v1alpha1
+kind: Pipeline
+metadata:
+  name: release-1
+spec:
+  jobs:
+    - name: build
+      templateRef: build
+```
+
+In a second terminal apply the sample manifest generated by kubebuilder:
+```bash
+mateus.desouza@SDGESP-6YGQ97WG k8s-pipeline-controller % kubectl apply -k config/samples
+sleep 10
+kubectl get jobs
+kubectl get pods --show-labels
+---------------------------------------
+pipeline.ci.example.com/release-1 created
+pipelinejobtemplate.ci.example.com/build unchanged
+NAME                STATUS     COMPLETIONS   DURATION   AGE
+release-1-0-build   Complete   1/1           8s         10s
+NAME                      READY   STATUS      RESTARTS   AGE   LABELS
+release-1-0-build-5fj7j   0/1     Completed   0          10s   batch.kubernetes.io/controller-uid=7a0149e1-7342-4a85-887a-7127ecea7927,batch.kubernetes.io/job-name=release-1-0-build,ci.example.com/job-index=0,ci.example.com/pipeline=release-1,controller-uid=7a0149e1-7342-4a85-887a-7127ecea7927,job-name=release-1-0-build
+mateus.desouza@SDGESP-6YGQ97WG k8s-pipeline-controller % kubectl logs -l ci.example.com/pipeline=release-1 -c checkout
+kubectl logs -l ci.example.com/pipeline=release-1 -c test
+cloning
+testing
+```
+
+After execution delete the pipeline:
+```sh
+kubectl delete pl release-1
+kubectl get jobs
+kubectl get pods --show-labels
+```
+Result:
+```bash
+ *  Executing task: docs/challenge/thought_process.md: kubectl-delete 
+pipeline.ci.example.com "release-1" deleted from default namespace
+No resources found in default namespace.
+No resources found in default namespace.
+```

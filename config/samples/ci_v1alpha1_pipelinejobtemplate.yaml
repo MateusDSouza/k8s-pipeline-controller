@@ -1,9 +1,12 @@
 apiVersion: ci.example.com/v1alpha1
 kind: PipelineJobTemplate
 metadata:
-  labels:
-    app.kubernetes.io/name: k8s-pipeline-controller
-    app.kubernetes.io/managed-by: kustomize
-  name: pipelinejobtemplate-sample
+  name: build
 spec:
-  # TODO(user): Add fields here
+  steps:
+    - name: checkout
+      image: busybox
+      command: ["sh", "-c", "echo cloning && sleep 2"]
+    - name: test
+      image: busybox
+      command: ["sh", "-c", "echo testing && sleep 2"]

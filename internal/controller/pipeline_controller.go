@@ -25,6 +25,11 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	civ1alpha1 "github.com/MateusDSouza/k8s-pipeline-controller/api/v1alpha1"
+
+	batchv1 "k8s.io/api/batch/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // PipelineReconciler reconciles a Pipeline object
@@ -36,28 +41,52 @@ type PipelineReconciler struct {
 // +kubebuilder:rbac:groups=ci.example.com,resources=pipelines,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=ci.example.com,resources=pipelines/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=ci.example.com,resources=pipelines/finalizers,verbs=update
+// +kubebuilder:rbac:groups=ci.example.com,resources=pipelinejobtemplates,verbs=get;list;watch
+// +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Pipeline object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.25.0/pkg/reconcile
+// every r.Get, r.List and r.Create in this function is a request to the API server made as your operator ServiceAccount. RBAC denies everything by default, so each kind of call needs a rule.
 func (r *PipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	_ = logf.FromContext(ctx)
+	log := logf.FromContext(ctx)
 
-	// TODO(user): your logic here
+	// 1. Read the Pipeline that triggered this reconcile.
+	var p civ1alpha1.Pipeline
+	if err := r.Get(ctx, req.NamespacedName, &p); err != nil { // if we cannot get this pipeline from the k8s api, it means that it was deleted and it shouldnt do anything. This is tested as the first thing in the reconcile loop.
+		// Deleted: nothing to do. Its Jobs are garbage-collected through ownerReferences.
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
 
+	// 2. only the first job after will add sequencing and status.
+	index := 0
+	var tmpl civ1alpha1.PipelineJobTemplate
+	key := types.NamespacedName{Namespace: p.Namespace, Name: p.Spec.Jobs[index].TemplateRef}
+	if err := r.Get(ctx, key, &tmpl); err != nil {
+		return ctrl.Result{}, err // e.g. template missing: requeued with backoff
+	}
+
+	// 3. Build the Job and make the Pipeline its owner
+	job := buildJob(&p, index, &tmpl) // call the function in job_builder.go and create a k8s job
+	if err := controllerutil.SetControllerReference(&p, job, r.Scheme); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// 4. Create it. "Already exists" means an earlier reconcile did it
+	if err := r.Create(ctx, job); err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, err
+	}
+
+	log.Info("created job", "job", job.Name, "template", tmpl.Name)
 	return ctrl.Result{}, nil
 }
 
+// This function connects the reconciler to the manager and sets when Reconcile should run. It uses the builder pattern: each method adds a setting and returns the builder
 // SetupWithManager sets up the controller with the Manager.
 func (r *PipelineReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&civ1alpha1.Pipeline{}).
-		Named("pipeline").
-		Complete(r)
+	return ctrl.NewControllerManagedBy(mgr). // start building a controller in this manager
+							For(&civ1alpha1.Pipeline{}). // main resource
+							Owns(&batchv1.Job{}).        // resources it creates
+							Named("pipeline").           // controller name
+							Complete(r)                  // build it, with r as the reconciler
 }
