@@ -52,7 +52,9 @@ spec:
             description: spec defines the jobs to run. Immutable after creation.
             properties:
               jobs:
-                description: jobs run sequentially in the order listed.
+                description: |-
+                  jobs run sequentially in the order listed.
+                  MaxItems keeps the index at 2 digits; the Job name length rule on Pipeline depends on it -> check internal/controller/job_builder_test.go
                 items:
                   description: 'PipelineJob is one entry of the pipeline: a named
                     reference to a template.'
@@ -209,6 +211,10 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: pipeline name + job name must be at most 59 characters
+          rule: self.spec.jobs.all(j, self.metadata.name.size() + j.name.size() +
+            4 <= 63)
     served: true
     storage: true
     subresources:

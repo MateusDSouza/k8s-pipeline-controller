@@ -19,18 +19,24 @@ var jobNameCases = []struct {
 	index    int
 	job      string
 	want     string
+	valid    bool
 }{
-	{"first job", "build-app", 0, "compile", "build-app-0-compile"},
-	{"later job", "build-app", 3, "test", "build-app-3-test"},
-	{"double digit index", "release", 12, "push", "release-12-push"},
+	{"first job", "build-app", 0, "compile", "build-app-0-compile", true},
+	{"later job", "build-app", 3, "test", "build-app-3-test", true},
+	{"double digit index", "release", 12, "push", "release-12-push", true},
 
-	// Valid CRD input that produces names longer than 63 chars.
-	{"long but realistic names",
+	// Boundary: pipeline + job = 59 chars, highest index → exactly 63 chars.
+	{"longest names the CRD allows",
+		strings.Repeat("p", 30), 49, strings.Repeat("j", 29),
+		strings.Repeat("p", 30) + "-49-" + strings.Repeat("j", 29), true},
+
+	// Rejected by the CRD: the name would exceed 63 chars.
+	{"long but realistic names (rejected by CRD)",
 		"payments-service-release-candidate-build", 7, "integration-tests-against-staging",
-		"payments-service-release-candidate-build-7-integration-tests-against-staging"},
-	{"longest job name the CRD allows",
+		"payments-service-release-candidate-build-7-integration-tests-against-staging", false},
+	{"max job name with short pipeline (rejected by CRD)",
 		"build-app", 49, strings.Repeat("a", 63),
-		"build-app-49-" + strings.Repeat("a", 63)},
+		"build-app-49-" + strings.Repeat("a", 63), false},
 }
 
 func TestJobName(t *testing.T) {
@@ -64,17 +70,21 @@ func TestJobName_UniquePerIndex(t *testing.T) {
 }
 
 // The Job controller copies the Job name into the Pod label
-// batch.kubernetes.io/job-name, so it must be a valid DNS-1123 label
-// (at most 63 chars). Otherwise creating the Job fails at runtime even
-// though the Pipeline passed CRD validation.
-//
-// Known issue: the two long cases fail with the current naming format.
+// batch.kubernetes.io/job-name, so it must be a valid DNS-1123 label (≤ 63 chars).
+// jobName does not truncate: inputs that would give a longer name are
+// rejected by the CEL rule on Pipeline before the controller sees them.
 func TestJobName_Length(t *testing.T) {
 	for _, tt := range jobNameCases {
 		t.Run(tt.name, func(t *testing.T) {
 			got := jobName(tt.pipeline, tt.index, tt.job)
-			if errs := validation.IsDNS1123Label(got); len(errs) > 0 {
-				t.Errorf("%q (%d chars) is not a valid Job name: %v", got, len(got), errs)
+			errs := validation.IsDNS1123Label(got)
+
+			switch {
+			case tt.valid && len(errs) > 0:
+				t.Errorf("%q (%d chars) should be a valid Job name: %v", got, len(got), errs)
+			case !tt.valid && len(errs) == 0:
+				t.Errorf("%q (%d chars) should be invalid (> 63 chars), so the CRD rule must reject this input",
+					got, len(got))
 			}
 		})
 	}

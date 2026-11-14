@@ -379,3 +379,13 @@ go test -v -run 'TestJobName|TestBuildJob' ./internal/controller/
 // The + 4 covers the two hyphens and up to two index digits, which works because MaxItems=50 -> each Pipeline can have a maximum number of 50 PipelineJobs.
 // +kubebuilder:validation:XValidation:rule="self.spec.jobs.all(j, self.metadata.name.size() + j.name.size() + 4 <= 63)",message="pipeline name + job name must be at most 59 characters"
 ```
+
+Now we need to generate the manifests once again to get the changes.
+Good also to test this against the envtest server - integration.
+
+```sh
+cd /Users/mateus.desouza/Desktop/k8s-pipeline-controller
+make generate manifests
+make test
+```
+
