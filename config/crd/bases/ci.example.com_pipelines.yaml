@@ -182,6 +182,7 @@ spec:
                       - Running
                       - Succeeded
                       - Failed
+                      - Skipped
                       type: string
                     startTime:
                       description: startTime is when the Kubernetes Job was created.
@@ -202,6 +203,7 @@ spec:
                 - Running
                 - Succeeded
                 - Failed
+                - Skipped
                 type: string
               startTime:
                 description: startTime is when the first job was created.

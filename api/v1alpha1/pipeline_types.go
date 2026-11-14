@@ -50,7 +50,7 @@ type PipelineSpec struct {
 }
 
 // Phase is the lifecycle state of a pipeline or of one of its jobs.
-// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed
+// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed;Skipped
 type Phase string
 
 const (
@@ -58,6 +58,7 @@ const (
 	PhaseRunning   Phase = "Running"
 	PhaseSucceeded Phase = "Succeeded"
 	PhaseFailed    Phase = "Failed"
+	PhaseSkipped   Phase = "Skipped"
 )
 
 // JobStatus reports the state of one pipeline job.
