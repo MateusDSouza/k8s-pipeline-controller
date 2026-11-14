@@ -18,6 +18,16 @@ package controller
 
 import (
 	"context"
+	"fmt"
+	"strconv"
+	"time"
+
+	batchv1 "k8s.io/api/batch/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -25,11 +35,6 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	civ1alpha1 "github.com/MateusDSouza/k8s-pipeline-controller/api/v1alpha1"
-
-	batchv1 "k8s.io/api/batch/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // PipelineReconciler reconciles a Pipeline object
@@ -45,40 +50,85 @@ type PipelineReconciler struct {
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 
 // every r.Get, r.List and r.Create in this function is a request to the API server made as your operator ServiceAccount. RBAC denies everything by default, so each kind of call needs a rule.
-func (r *PipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *PipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) { // this is a function from the PipelineReconciler type
 	log := logf.FromContext(ctx)
 
-	// 1. Read the Pipeline that triggered this reconcile.
+	// 1. Read the pipeline.
 	var p civ1alpha1.Pipeline
-	if err := r.Get(ctx, req.NamespacedName, &p); err != nil { // if we cannot get this pipeline from the k8s api, it means that it was deleted and it shouldnt do anything. This is tested as the first thing in the reconcile loop.
-		// Deleted: nothing to do. Its Jobs are garbage-collected through ownerReferences.
+	if err := r.Get(ctx, req.NamespacedName, &p); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-
-	// 2. only the first job after will add sequencing and status.
-	index := 0
-	var tmpl civ1alpha1.PipelineJobTemplate
-	key := types.NamespacedName{Namespace: p.Namespace, Name: p.Spec.Jobs[index].TemplateRef}
-	if err := r.Get(ctx, key, &tmpl); err != nil {
-		return ctrl.Result{}, err // e.g. template missing: requeued with backoff
+	if p.Status.Phase == civ1alpha1.PhaseSucceeded || p.Status.Phase == civ1alpha1.PhaseFailed { //In case the pipeline fail returns
+		return ctrl.Result{}, nil // finished: nothing more to do
 	}
+	before := p.DeepCopy()
 
-	// 3. Build the Job and make the Pipeline its owner
-	job := buildJob(&p, index, &tmpl) // call the function in job_builder.go and create a k8s job
-	if err := controllerutil.SetControllerReference(&p, job, r.Scheme); err != nil {
+	// 2. Observe: the Jobs this pipeline owns, by index.
+	var jobList batchv1.JobList
+	if err := r.List(ctx, &jobList, client.InNamespace(p.Namespace),
+		client.MatchingLabels{labelPipeline: p.Name}); err != nil {
 		return ctrl.Result{}, err
 	}
-
-	// 4. Create it. "Already exists" means an earlier reconcile did it
-	if err := r.Create(ctx, job); err != nil {
-		if apierrors.IsAlreadyExists(err) {
-			return ctrl.Result{}, nil
+	jobs := map[int]*batchv1.Job{}
+	states := map[int]jobState{}
+	for i := range jobList.Items {
+		j := &jobList.Items[i]
+		idx, err := strconv.Atoi(j.Labels[labelJobIndex])
+		if err != nil || !metav1.IsControlledBy(j, &p) {
+			continue // not ours, e.g. left over from a deleted pipeline with the same name
 		}
-		return ctrl.Result{}, err
+		jobs[idx] = j
+		states[idx] = stateOf(j)
 	}
 
-	log.Info("created job", "job", job.Name, "template", tmpl.Name)
-	return ctrl.Result{}, nil
+	// 3. Decide and act.
+	result := ctrl.Result{}
+	next := decide(len(p.Spec.Jobs), states)
+	switch next.kind {
+	case actionCreateJob:
+		pj := p.Spec.Jobs[next.index]
+		var tmpl civ1alpha1.PipelineJobTemplate
+		err := r.Get(ctx, types.NamespacedName{Namespace: p.Namespace, Name: pj.TemplateRef}, &tmpl)
+		switch {
+		case apierrors.IsNotFound(err):
+			phase := p.Status.Phase
+			if phase == "" {
+				phase = civ1alpha1.PhasePending
+			}
+			setPhase(&p, phase, "TemplateNotFound",
+				fmt.Sprintf("template %q for job %q not found", pj.TemplateRef, pj.Name))
+			result = ctrl.Result{RequeueAfter: 15 * time.Second} // check again later
+		case err != nil:
+			return ctrl.Result{}, err
+		default:
+			job := buildJob(&p, next.index, &tmpl)
+			if err := controllerutil.SetControllerReference(&p, job, r.Scheme); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
+				return ctrl.Result{}, err
+			}
+			log.Info("created job", "job", job.Name, "index", next.index, "template", tmpl.Name)
+			setPhase(&p, civ1alpha1.PhaseRunning, "Running", fmt.Sprintf("job %q started", pj.Name))
+		}
+	case actionWait:
+		setPhase(&p, civ1alpha1.PhaseRunning, "Running",
+			fmt.Sprintf("job %q running", p.Spec.Jobs[next.index].Name))
+	case actionFail:
+		setPhase(&p, civ1alpha1.PhaseFailed, "JobFailed",
+			fmt.Sprintf("job %q failed", p.Spec.Jobs[next.index].Name))
+	case actionSucceed:
+		setPhase(&p, civ1alpha1.PhaseSucceeded, "Succeeded", "all jobs succeeded")
+	}
+
+	// 4. Report: write status only if it changed.
+	p.Status.Jobs = jobStatuses(&p, jobs)
+	if !equality.Semantic.DeepEqual(before.Status, p.Status) {
+		if err := r.Status().Patch(ctx, &p, client.MergeFrom(before)); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+	return result, nil
 }
 
 // This function connects the reconciler to the manager and sets when Reconcile should run. It uses the builder pattern: each method adds a setting and returns the builder

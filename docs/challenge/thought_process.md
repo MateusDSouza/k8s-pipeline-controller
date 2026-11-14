@@ -482,3 +482,77 @@ pipeline.ci.example.com "release-1" deleted from default namespace
 No resources found in default namespace.
 No resources found in default namespace.
 ```
+
+Before moving forward it is better to document all the decision in a file called decisions.md.
+
+#### Implementing Pipeline Sequencing
+
+The first implementation only created the first job, which was enough to test the controller on kind.
+Now a pipeline can have several jobs, which must run in order and stop at the first failure.
+
+Every reconcile does the same four things:
+
+| Role    | Question                                  | Where                                                  |
+| ------- | ----------------------------------------- | ------------------------------------------------------ |
+| OBSERVE | What exists in the cluster right now?     | `Reconcile` lists the Jobs; `stateOf()` reads each one |
+| DECIDE  | Given that, what is the single next step? | `decide()` in `decide.go`                              |
+| ACT     | Do it (create a Job, or nothing)          | `Reconcile` in `pipeline_controller.go`                |
+| REPORT  | Tell the user what happened               | `setPhase()` and `jobStatuses()` in `status.go`        |
+
+`decide.go` and `status.go` are pure functions: data in, data out, no calls to k8s.
+That makes them easy to unit test, like `job_builder.go`. Only `pipeline_controller.go` talks to the API server.
+
+##### decide.go — what should happen next?
+
+- `jobState`: the four states a pipeline job can be in: missing, running, succeeded, failed.
+  "Missing" is the zero value on purpose: looking up a job that was never created in a Go map
+  returns the zero value, so "no Job yet" needs no special case.
+- `stateOf(job)`: reads the conditions that Kubernetes' own Job controller sets on a Job:
+  `Complete=True` → succeeded, `Failed=True` → failed, anything else → still running.
+- `jobCondition(job, type)`: small helper that finds one condition in a Job's status.
+- `decide(numJobs, states)`: walks the jobs in order and returns ONE action:
+  - first job that doesn't exist yet → create it
+  - first job that is running → wait
+  - first job that failed → fail the pipeline (later jobs are never created: fail-fast)
+  - every job succeeded → succeed the pipeline
+  Because it stops at the first job that isn't done, job N+1 is only ever created after job N succeeded.
+
+Tested in `decide_test.go` with a table of scenarios (nothing created, first running, first failed,
+failure after a success, all done...), without any cluster.
+
+##### status.go — what does the user see?
+
+- `setPhase(pipeline, phase, reason, message)`: the ONLY place where a pipeline changes phase.
+  It sets the phase, the start time (first time it leaves Pending), the completion time
+  (when it reaches Succeeded or Failed) and a standard `Ready` condition with a reason and message.
+  Keeping it in one place means logging and metrics can be added in one spot later.
+- `jobStatuses(pipeline, jobs)`: rebuilds the per-job list in the status from the Jobs that really
+  exist: name, Kubernetes Job name, phase, start and completion time.
+
+##### pipeline_controller.go — Reconcile puts it together
+
+1. **Read** the Pipeline. Deleted → nothing to do. Already Succeeded/Failed → nothing to do.
+2. **Observe**: list the Jobs with this pipeline's label, keep only the ones it owns
+   (`IsControlledBy`, to ignore leftovers from a deleted pipeline with the same name),
+   and compute each one's state.
+3. **Decide and act**: call `decide()`.
+   - create → fetch the template, build the Job, set the owner reference, create it.
+     If the template doesn't exist: condition `TemplateNotFound`, check again in 15 s.
+   - wait / fail / succeed → only the phase changes.
+4. **Report**: rebuild the per-job status, and write the status (only if it changed) with a patch
+   on the status subresource.
+
+Each reconcile does one step and returns. The pipeline moves forward because every change to one of
+its Jobs (created, completed, failed) triggers a new reconcile (`Owns(&batchv1.Job{})`):
+
+reconcile #1  Pipeline created   states: {}              → create job 0     phase: Running
+reconcile #2  Job 0 created      states: {0: running}    → wait             phase: Running
+reconcile #3  Job 0 completed    states: {0: succeeded}  → create job 1     phase: Running
+reconcile #4  Job 1 created      states: {0: ok, 1: running} → wait         phase: Running
+reconcile #5  Job 1 completed    states: {0: ok, 1: ok}  → succeed          phase: Succeeded
+
+##### Samples
+
+- New template [deploy](../../config/samples/ci_v1alpha1_pipelinejobtemplate_deploy.yaml) (added to the kustomization).
+- [release-1](../../config/samples/ci_v1alpha1_pipeline.yaml) now has two jobs: build → deploy.
+- [examples/fail-fast.yaml](../../examples/fail-fast.yaml): the first job fails, the second must never be created.

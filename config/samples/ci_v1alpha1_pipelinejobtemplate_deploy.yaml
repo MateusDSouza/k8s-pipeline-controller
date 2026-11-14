@@ -1,0 +1,9 @@
+apiVersion: ci.example.com/v1alpha1
+kind: PipelineJobTemplate
+metadata:
+  name: deploy
+spec:
+  steps:
+    - name: deploy
+      image: busybox
+      command: ["sh", "-c", "echo deploying && sleep 2"]
