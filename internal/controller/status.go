@@ -55,6 +55,8 @@ func jobStatuses(p *civ1alpha1.Pipeline, jobs map[int]*batchv1.Job) []civ1alpha1
 			default:
 				s.Phase = civ1alpha1.PhaseRunning
 			}
+		} else if p.Status.Phase == civ1alpha1.PhaseFailed {
+			s.Phase = civ1alpha1.PhaseSkipped // never created: an earlier job failed
 		}
 		out[i] = s
 	}
