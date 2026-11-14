@@ -72,8 +72,8 @@ cmd_demo() {
     || die "no Job created after ${TIMEOUT}s - check the controller output"
 
   log "waiting for the Job to finish"
-  kubectl wait job -l "ci.example.com/pipeline=$PIPELINE" --for=condition=complete --timeout="${TIMEOUT}s" \
-    || log "Job did not complete (failed or timed out) - showing what we have"
+    kubectl wait pipeline "$PIPELINE" --for=jsonpath='{.status.phase}'=Succeeded --timeout="${TIMEOUT}s" \
+    || log "pipeline did not succeed - showing what we have"
 
   kubectl get pipeline "$PIPELINE"
   kubectl get jobs,pods -l "ci.example.com/pipeline=$PIPELINE"

@@ -6,3 +6,5 @@ spec:
   jobs:
     - name: build
       templateRef: build
+    - name: deploy
+      templateRef: deploy

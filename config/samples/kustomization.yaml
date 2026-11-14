@@ -2,4 +2,5 @@
 resources:
 - ci_v1alpha1_pipeline.yaml
 - ci_v1alpha1_pipelinejobtemplate.yaml
+- ci_v1alpha1_pipelinejobtemplate_deploy.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
