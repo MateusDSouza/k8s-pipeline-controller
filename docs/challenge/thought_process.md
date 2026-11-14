@@ -624,3 +624,58 @@ and returned.
 
 **JSON by default.** In `cmd/main.go` -> `Development: false`, so the output is JSON (info level,
 stack traces only on errors). In production, logs are collected into systems like Grafana Loki and JSON let it filter by field.
+
+
+
+## 5. Integration Tests
+
+The unit tests check the pure functions (`decide`, `jobStatuses`, `buildJob`) without Kubernetes.
+The integration tests check the **whole reconciler against a real API server**, using **envtest**
+(a real kube-apiserver + etcd started by `make test`, with the CRDs installed).
+
+**What envtest doesn't have:** no kubelet and no Kubernetes Job controller. My controller creates
+Jobs, but nothing runs them. So in the tests, **the test plays the Job controller**: after a reconcile
+creates a Job, the test writes the Job's status as succeeded or failed, then reconciles again to see
+how the controller reacts. The tests call `Reconcile` directly, one step at a time, so they are
+deterministic (no waiting, no timing) and take milliseconds.
+
+Each scenario checks: the pipeline phase, the `Ready` condition, the completion time, the phase of
+every job, how many Kubernetes Jobs were created (jobs after a failure must never be created), and
+that reconciling a finished pipeline again changes nothing.
+
+| #   | Scenario                     | Jobs (outcome)                      | Pipeline              | Job phases                 | Jobs created |
+| --- | ---------------------------- | ----------------------------------- | --------------------- | -------------------------- | ------------ |
+| 1   | 1 job succeeds               | build ✓                             | Succeeded             | Succeeded                  | 1            |
+| 2   | 1 job fails                  | build ✗                             | Failed                | Failed                     | 1            |
+| 3   | 2 jobs succeed               | build ✓ → deploy ✓                  | Succeeded             | Succeeded, Succeeded       | 2            |
+| 4   | 2 jobs, first fails          | build ✗ → deploy (skipped)          | Failed                | Failed, Skipped            | 1            |
+| 5   | 3 jobs, second fails         | build ✓ → test ✗ → deploy (skipped) | Failed                | Succeeded, Failed, Skipped | 2            |
+| 6   | 3 jobs succeed               | build ✓ → test ✓ → deploy ✓         | Succeeded             | Succeeded ×3               | 3            |
+| 7   | 2 pipelines at the same time | A: ✓ → ✓ / B: ✓ → ✗                 | A Succeeded, B Failed | A: S, S / B: S, F          | 2 + 2        |
+
+**What they prove:**
+- **Sequencing:** job N+1 is only created after job N succeeded (scenarios 3, 5, 6).
+- **Fail-fast:** after a failure, no further Job is created, and the remaining jobs are `Skipped` (2, 4, 5).
+- **Terminal state:** a finished pipeline does nothing more, however often it is reconciled (all).
+- **Isolation:** two pipelines progressing at the same time don't affect each other (7). Each
+  pipeline only looks at the Jobs it owns (label + ownerReference).
+
+**What they don't prove** (covered elsewhere): that containers really run and steps execute in order
+(verified on kind with `scripts/dev.sh demo`), and that the deployed controller has the right RBAC
+(e2e tests deploy the real manager).
+
+**About scenario 7:** in the tests, the two pipelines are interleaved step by step rather than truly
+in parallel. That is what matters for the logic: the controller handles one reconcile per pipeline
+at a time (controller-runtime's work queue guarantees it), so "at the same time" means their steps
+interleave, which is exactly what the test does. On kind, the same scenario runs with real pods.
+
+
+To run the integration tests:
+```sh
+go test ./internal/controller/ -v -ginkgo.v ## this way we run only the integration tests with more verbosity
+```
+
+To run the complete suit of test:
+```sh
+make test
+```
