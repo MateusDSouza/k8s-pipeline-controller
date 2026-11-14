@@ -1,9 +1,8 @@
 apiVersion: ci.example.com/v1alpha1
 kind: Pipeline
 metadata:
-  labels:
-    app.kubernetes.io/name: k8s-pipeline-controller
-    app.kubernetes.io/managed-by: kustomize
-  name: pipeline-sample
+  name: release-1
 spec:
-  # TODO(user): Add fields here
+  jobs:
+    - name: build
+      templateRef: build

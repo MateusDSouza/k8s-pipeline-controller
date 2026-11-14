@@ -5,6 +5,24 @@ metadata:
   name: manager-role
 rules:
 - apiGroups:
+  - batch
+  resources:
+  - jobs
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - watch
+- apiGroups:
+  - ci.example.com
+  resources:
+  - pipelinejobtemplates
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - ci.example.com
   resources:
   - pipelines
