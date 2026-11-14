@@ -67,7 +67,7 @@ func (r *PipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	var jobList batchv1.JobList
 	if err := r.List(ctx, &jobList, client.InNamespace(p.Namespace),
 		client.MatchingLabels{labelPipeline: p.Name}); err != nil {
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("list jobs: %w", err) // we delegate
 	}
 	jobs := map[int]*batchv1.Job{}
 	states := map[int]jobState{}
@@ -99,16 +99,19 @@ func (r *PipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 				fmt.Sprintf("template %q for job %q not found", pj.TemplateRef, pj.Name))
 			result = ctrl.Result{RequeueAfter: 15 * time.Second} // check again later
 		case err != nil:
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("get template %q: %w", pj.TemplateRef, err)
 		default:
 			job := buildJob(&p, next.index, &tmpl)
 			if err := controllerutil.SetControllerReference(&p, job, r.Scheme); err != nil {
-				return ctrl.Result{}, err
+				return ctrl.Result{}, fmt.Errorf("set owner reference on job %s: %w", job.Name, err)
 			}
-			if err := r.Create(ctx, job); err != nil && !apierrors.IsAlreadyExists(err) {
-				return ctrl.Result{}, err
+			if err := r.Create(ctx, job); err != nil {
+				if !apierrors.IsAlreadyExists(err) {
+					return ctrl.Result{}, fmt.Errorf("create job %s: %w", job.Name, err)
+				}
+			} else {
+				log.Info("created job", "job", job.Name, "index", next.index, "template", tmpl.Name)
 			}
-			log.Info("created job", "job", job.Name, "index", next.index, "template", tmpl.Name)
 			setPhase(&p, civ1alpha1.PhaseRunning, "Running", fmt.Sprintf("job %q started", pj.Name))
 		}
 	case actionWait:
@@ -121,12 +124,13 @@ func (r *PipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 		setPhase(&p, civ1alpha1.PhaseSucceeded, "Succeeded", "all jobs succeeded")
 	}
 
-	// 4. Report: write status only if it changed.
+	// 4. Report: write status only if it changed, then log/count the transition once it's saved.
 	p.Status.Jobs = jobStatuses(&p, jobs)
 	if !equality.Semantic.DeepEqual(before.Status, p.Status) {
 		if err := r.Status().Patch(ctx, &p, client.MergeFrom(before)); err != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 		}
+		recordTransition(log, &p, before.Status.Phase) // in this point after a transition occurs we send the record to the variables created in metrics/metrics.go!
 	}
 	return result, nil
 }
