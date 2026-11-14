@@ -41,6 +41,7 @@ type PipelineJob struct {
 // Each job starts only after the previous one succeeded.
 type PipelineSpec struct {
 	// jobs run sequentially in the order listed.
+	// MaxItems keeps the index at 2 digits; the Job name length rule on Pipeline depends on it -> check internal/controller/job_builder_test.go
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=50
 	// +listType=map
@@ -114,6 +115,7 @@ type PipelineStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
 // +kubebuilder:printcolumn:name="Started",type=date,JSONPath=`.status.startTime`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+// +kubebuilder:validation:XValidation:rule="self.spec.jobs.all(j, self.metadata.name.size() + j.name.size() + 4 <= 63)",message="pipeline name + job name must be at most 59 characters"
 
 // Pipeline runs a sequence of jobs, each built from a PipelineJobTemplate.
 type Pipeline struct {
