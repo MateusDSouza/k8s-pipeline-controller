@@ -11,13 +11,25 @@ spec:
     kind: Pipeline
     listKind: PipelineList
     plural: pipelines
+    shortNames:
+    - pl
     singular: pipeline
   scope: Namespaced
   versions:
-  - name: v1alpha1
+  - additionalPrinterColumns:
+    - jsonPath: .status.phase
+      name: Phase
+      type: string
+    - jsonPath: .status.startTime
+      name: Started
+      type: date
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: Pipeline is the Schema for the pipelines API
+        description: Pipeline runs a sequence of jobs, each built from a PipelineJobTemplate.
         properties:
           apiVersion:
             description: |-
@@ -37,27 +49,56 @@ spec:
           metadata:
             type: object
           spec:
-            description: spec defines the desired state of Pipeline
+            description: spec defines the jobs to run. Immutable after creation.
             properties:
-              foo:
-                description: foo is an example field of Pipeline. Edit pipeline_types.go
-                  to remove/update
-                type: string
+              jobs:
+                description: jobs run sequentially in the order listed.
+                items:
+                  description: 'PipelineJob is one entry of the pipeline: a named
+                    reference to a template.'
+                  properties:
+                    name:
+                      description: |-
+                        name identifies the job within the pipeline and is used to name
+                        the Kubernetes Job. Must be a DNS-1123 label, unique in the pipeline.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    templateRef:
+                      description: templateRef is the name of a PipelineJobTemplate
+                        in the same namespace.
+                      maxLength: 253
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-.a-z0-9]*[a-z0-9])?$
+                      type: string
+                  required:
+                  - name
+                  - templateRef
+                  type: object
+                maxItems: 50
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            required:
+            - jobs
             type: object
+            x-kubernetes-validations:
+            - message: pipeline spec is immutable
+              rule: self == oldSelf
           status:
             description: status defines the observed state of Pipeline
             properties:
+              completionTime:
+                description: completionTime is when the pipeline reached Succeeded
+                  or Failed.
+                format: date-time
+                type: string
               conditions:
-                description: |-
-                  conditions represent the current state of the Pipeline resource.
-                  Each condition has a unique type and reflects the status of a specific aspect of the resource.
-
-                  Standard condition types include:
-                  - "Available": the resource is fully functional
-                  - "Progressing": the resource is being created or updated
-                  - "Degraded": the resource failed to reach or maintain its desired state
-
-                  The status of each condition is one of True, False, or Unknown.
+                description: conditions give details on the pipeline state, e.g. why
+                  it failed.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.
@@ -116,6 +157,54 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
+              jobs:
+                description: jobs reports the state of each job, in spec order.
+                items:
+                  description: JobStatus reports the state of one pipeline job.
+                  properties:
+                    completionTime:
+                      description: completionTime is when the job succeeded or failed.
+                      format: date-time
+                      type: string
+                    jobName:
+                      description: jobName is the name of the Kubernetes Job created
+                        for this job.
+                      type: string
+                    name:
+                      description: name matches the job name in spec.jobs.
+                      type: string
+                    phase:
+                      description: phase is the current state of this job.
+                      enum:
+                      - Pending
+                      - Running
+                      - Succeeded
+                      - Failed
+                      type: string
+                    startTime:
+                      description: startTime is when the Kubernetes Job was created.
+                      format: date-time
+                      type: string
+                  required:
+                  - name
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              phase:
+                description: 'phase summarizes the pipeline: Pending, Running, Succeeded
+                  or Failed.'
+                enum:
+                - Pending
+                - Running
+                - Succeeded
+                - Failed
+                type: string
+              startTime:
+                description: startTime is when the first job was created.
+                format: date-time
+                type: string
             type: object
         required:
         - spec

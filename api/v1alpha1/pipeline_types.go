@@ -21,38 +21,87 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
+// PipelineJob is one entry of the pipeline: a named reference to a template.
+type PipelineJob struct {
+	// name identifies the job within the pipeline and is used to name
+	// the Kubernetes Job. Must be a DNS-1123 label, unique in the pipeline.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	Name string `json:"name"`
 
-// PipelineSpec defines the desired state of Pipeline
-type PipelineSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-	// The following markers will use OpenAPI v3 schema to validate the value
-	// More info: https://book.kubebuilder.io/reference/markers/crd-validation.html
-
-	// foo is an example field of Pipeline. Edit pipeline_types.go to remove/update
-	// +optional
-	Foo *string `json:"foo,omitempty"`
+	// templateRef is the name of a PipelineJobTemplate in the same namespace.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-.a-z0-9]*[a-z0-9])?$`
+	TemplateRef string `json:"templateRef"`
 }
 
-// PipelineStatus defines the observed state of Pipeline.
+// PipelineSpec lists the jobs to run, in order.
+// Each job starts only after the previous one succeeded.
+type PipelineSpec struct {
+	// jobs run sequentially in the order listed.
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=50
+	// +listType=map
+	// +listMapKey=name
+	Jobs []PipelineJob `json:"jobs"`
+}
+
+// Phase is the lifecycle state of a pipeline or of one of its jobs.
+// +kubebuilder:validation:Enum=Pending;Running;Succeeded;Failed
+type Phase string
+
+const (
+	PhasePending   Phase = "Pending"
+	PhaseRunning   Phase = "Running"
+	PhaseSucceeded Phase = "Succeeded"
+	PhaseFailed    Phase = "Failed"
+)
+
+// JobStatus reports the state of one pipeline job.
+type JobStatus struct {
+	// name matches the job name in spec.jobs.
+	Name string `json:"name"`
+
+	// jobName is the name of the Kubernetes Job created for this job.
+	// +optional
+	JobName string `json:"jobName,omitempty"`
+
+	// phase is the current state of this job.
+	// +optional
+	Phase Phase `json:"phase,omitempty"`
+
+	// startTime is when the Kubernetes Job was created.
+	// +optional
+	StartTime *metav1.Time `json:"startTime,omitempty"`
+
+	// completionTime is when the job succeeded or failed.
+	// +optional
+	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
+}
+
+// PipelineStatus is the observed state of a Pipeline. Written by the controller only.
 type PipelineStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	// phase summarizes the pipeline: Pending, Running, Succeeded or Failed.
+	// +optional
+	Phase Phase `json:"phase,omitempty"`
 
-	// For Kubernetes API conventions, see:
-	// https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+	// jobs reports the state of each job, in spec order.
+	// +listType=map
+	// +listMapKey=name
+	// +optional
+	Jobs []JobStatus `json:"jobs,omitempty"`
 
-	// conditions represent the current state of the Pipeline resource.
-	// Each condition has a unique type and reflects the status of a specific aspect of the resource.
-	//
-	// Standard condition types include:
-	// - "Available": the resource is fully functional
-	// - "Progressing": the resource is being created or updated
-	// - "Degraded": the resource failed to reach or maintain its desired state
-	//
-	// The status of each condition is one of True, False, or Unknown.
+	// startTime is when the first job was created.
+	// +optional
+	StartTime *metav1.Time `json:"startTime,omitempty"`
+
+	// completionTime is when the pipeline reached Succeeded or Failed.
+	// +optional
+	CompletionTime *metav1.Time `json:"completionTime,omitempty"`
+
+	// conditions give details on the pipeline state, e.g. why it failed.
 	// +listType=map
 	// +listMapKey=type
 	// +optional
@@ -61,8 +110,12 @@ type PipelineStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=pl
+// +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Started",type=date,JSONPath=`.status.startTime`
+// +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
-// Pipeline is the Schema for the pipelines API
+// Pipeline runs a sequence of jobs, each built from a PipelineJobTemplate.
 type Pipeline struct {
 	metav1.TypeMeta `json:",inline"`
 
@@ -70,8 +123,9 @@ type Pipeline struct {
 	// +optional
 	metav1.ObjectMeta `json:"metadata,omitzero"`
 
-	// spec defines the desired state of Pipeline
+	// spec defines the jobs to run. Immutable after creation.
 	// +required
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="pipeline spec is immutable"
 	Spec PipelineSpec `json:"spec"`
 
 	// status defines the observed state of Pipeline
