@@ -389,3 +389,6 @@ make generate manifests
 make test
 ```
 
+The unit tests cases in [text](../../internal/controller/job_builder_test.go) were adjusted to cover the different scenarios and respecting the limit of 63 characters per kubernetes job names.
+As the solution was implemented in the infrastructure side, it is good to also implement some integration tests agains the envtest server using the ginkgo - the default integration test framework used by kubebuilder.
+
