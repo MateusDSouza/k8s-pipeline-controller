@@ -127,7 +127,13 @@ func (r *PipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	// 4. Report: write status only if it changed, then log/count the transition once it's saved.
 	p.Status.Jobs = jobStatuses(&p, jobs)
 	if !equality.Semantic.DeepEqual(before.Status, p.Status) {
-		if err := r.Status().Patch(ctx, &p, client.MergeFrom(before)); err != nil {
+		// Optimistic lock: the patch carries the resourceVersion we read. If the cache was behind,
+		// the API server answers Conflict and nothing is written or counted; we retry with fresh data.
+		patch := client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}) // observe the same object!
+		if err := r.Status().Patch(ctx, &p, patch); err != nil {
+			if apierrors.IsConflict(err) {
+				return ctrl.Result{RequeueAfter: time.Second}, nil
+			}
 			return ctrl.Result{}, fmt.Errorf("update status: %w", err)
 		}
 		recordTransition(log, &p, before.Status.Phase) // in this point after a transition occurs we send the record to the variables created in metrics/metrics.go!
