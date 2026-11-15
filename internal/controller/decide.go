@@ -53,7 +53,7 @@ type action struct {
 // decide walks the jobs in order and returns the single next action.
 // Sequential and fail-fast: job N+1 is only considered after job N succeeded.
 func decide(numJobs int, states map[int]jobState) action {
-	for i := 0; i < numJobs; i++ {
+	for i := range numJobs {
 		switch states[i] {
 		case jobMissing:
 			return action{kind: actionCreateJob, index: i}

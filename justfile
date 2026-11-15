@@ -34,6 +34,14 @@ demo:
 demo-live:
     @demo/scripts/demo-live.sh
 
+# Create N pipelines at once (default 50), wait for all, check the metrics count each once
+burst n="50":
+    @demo/scripts/burst.sh {{n}}
+
+# Same screen as demo-live, running a burst of N pipelines (default 50) instead of the scenarios
+burst-live n="50":
+    @demo/scripts/demo-live.sh burst {{n}}
+
 # --- observe ---
 
 # Show the pipeline metrics once
