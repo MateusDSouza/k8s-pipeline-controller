@@ -7,14 +7,12 @@ progress in the Pipeline's status, Prometheus metrics and structured (JSON) logs
 
 ## Quick start (demo)
 
-Requirements: Docker running, and macOS with [Homebrew](https://brew.sh) for the automatic install.
-On Linux, install `go`, `kind`, `kubectl` and `just` yourself, plus `tmux` for `just demo-live`;
-`k9s` and `fzf` are optional (a live view in the demo screen, interactive pickers).
+Requirements: Docker running, and macOS with [Homebrew](https://brew.sh) for the automatic install
+(on Linux, install `go`, `kind`, `kubectl`, `just` yourself; `tmux`, `fzf`, `k9s` are optional).
 
 ```bash
-chmod +x demo/setup.sh   # only if your clone lost the execute bit
-./demo/setup.sh          # installs missing tools (asks first), creates a kind cluster, installs the CRDs
-just demo-live           # one screen: controller log | live metrics | all scenarios | k9s
+./demo/setup.sh     # installs missing tools (asks first), creates a kind cluster, installs the CRDs
+just demo-live      # one screen: controller log | live metrics | all scenarios | k9s
 ```
 
 `just demo-live` runs all seven scenarios below at once, prints a summary, checks the metrics against
@@ -74,7 +72,7 @@ kubectl get pipeline release -w    # Pending -> Running -> Succeeded
 just logs release                  # each step's output, in order
 ```
 
-```sh
+```console
 $ kubectl get pipelines
 NAME      PHASE       AGE
 release   Succeeded   40s
@@ -88,21 +86,21 @@ again.
 ## How it runs
 
 - **One Kubernetes Job per pipeline job**, named `<pipeline>-<index>-<job>`, owned by the Pipeline
-   (deleting the Pipeline deletes its Jobs and pods).
+  (deleting the Pipeline deletes its Jobs and pods).
 - **Steps run in order inside one pod**: every step but the last is an init container, the last one is
-   the main container. They share an `emptyDir` mounted at `/workspace`, so a step can pass files to
-   the next.
+  the main container. They share an `emptyDir` mounted at `/workspace`, so a step can pass files to
+  the next.
 - **Jobs run sequentially.** Job *n+1* is created only after job *n* succeeded.
 - **Fail fast, no retries** (`backoffLimit: 0`): the first failing job marks the Pipeline `Failed`; the
-   jobs after it are reported as `Skipped` and never created.
+  jobs after it are reported as `Skipped` and never created.
 - **Status**: `status.phase` (`Pending` → `Running` → `Succeeded` / `Failed`), one entry per job in
-   `status.jobs` (phase, Job name, start and completion time), the pipeline's start and completion
-   time, and a `Ready` condition with a reason and message.
+  `status.jobs` (phase, Job name, start and completion time), the pipeline's start and completion
+  time, and a `Ready` condition with a reason and message.
 - **Validation in the API** (CRD schema and CEL): at least one job and one step, unique names, at most
-   50 jobs, Job names within the 63-character limit, and the Pipeline spec is immutable (re-running
-   means creating a new Pipeline).
+  50 jobs, Job names within the 63-character limit, and the Pipeline spec is immutable (re-running
+  means creating a new Pipeline).
 - **Missing template**: the Pipeline waits (`Ready` reason `TemplateNotFound`) and is re-checked every
-   15 seconds, so creating the template later unblocks it.
+  15 seconds, so creating the template later unblocks it.
 
 ## Scenarios
 
@@ -119,6 +117,27 @@ again.
 | `05-three-jobs-second-fails` | build → broken → deploy | Failed, deploy Skipped                                    |
 | `06-three-jobs-ok`           | build → test → deploy   | Succeeded                                                 |
 | `07-parallel`                | two pipelines at once   | parallel-a Succeeded, parallel-b Failed in its second job |
+
+## Load check
+
+`just burst [N]` creates N pipelines (build → test) in a single `kubectl apply`, waits until all of
+them finish and checks that the metrics count every pipeline exactly once. `just burst-live [N]` runs
+it on the same four-pane screen as the demo.
+
+![50 pipelines at once: controller log, metrics, burst summary and k9s](docs/images/burst_live_result.webp)
+
+On a laptop (kind, one node):
+
+| Pipelines | Wall time | Avg pipeline duration | Peak work queue depth | Reconcile errors | Counted once |
+| --------- | --------- | --------------------- | --------------------- | ---------------- | ------------ |
+| 10        | 15 s      | 14.6 s                | 10                    | 0                | yes          |
+| 50        | 34 s      | 28.4 s                | 50                    | 0                | yes          |
+
+The work queue peaks at almost every pipeline and drains back to zero: one worker keeps up, because a
+reconcile takes milliseconds. The longer pipeline durations at 50 come from 100 pods sharing one kind
+node, not from the controller. Under this load the informer cache can lag behind the controller's own
+status writes; status patches carry an optimistic lock, so a reconcile working from stale data gets a
+conflict and retries instead of counting a transition twice.
 
 ## Observability
 
@@ -143,19 +162,21 @@ output, run the controller with `--zap-devel=true`.
 | `make lint`     | golangci-lint, the same check as CI                                                                                                                                                                                                                           | No                           |
 | `make test-e2e` | kubebuilder's end-to-end test: builds the image, deploys the manager to a kind cluster, checks it runs and serves metrics                                                                                                                                     | Creates its own kind cluster |
 | `just demo`     | The scenarios on a real cluster, with real pods, checked against the statuses and the metrics                                                                                                                                                                 | The demo cluster             |
+| `just burst`    | 50 pipelines at once; every one finishes and is counted exactly once                                                                                                                                                                                          | The demo cluster             |
 
 GitHub Actions runs `make lint`, `make test` and `make test-e2e` on every push and pull request.
 
 ## Repository layout
 
-| Path                   | Contents                                                                                                                                                                                                                         |
-| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `api/v1alpha1/`        | The CRD types and their validation markers                                                                                                                                                                                       |
-| `internal/controller/` | The reconciler (`pipeline_controller.go`), split into building Jobs (`job_builder.go`), deciding the next action (`decide.go`), computing status (`status.go`) and recording transitions (`transitions.go`), each with its tests |
-| `internal/metrics/`    | The Prometheus metrics                                                                                                                                                                                                           |
-| `config/`              | Generated CRDs, RBAC and the manager deployment (kustomize)                                                                                                                                                                      |
-| `demo/`                | The demo: setup script, scenarios and the scripts behind the `justfile`                                                                                                                                                          |
-| `docs/decisions.md`    | The design decisions, the reasons behind them and the known limits                                                                                                                                                               |
+| Path                      | Contents                                                                                                                                                                                                                         |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `api/v1alpha1/`           | The CRD types and their validation markers                                                                                                                                                                                       |
+| `internal/controller/`    | The reconciler (`pipeline_controller.go`), split into building Jobs (`job_builder.go`), deciding the next action (`decide.go`), computing status (`status.go`) and recording transitions (`transitions.go`), each with its tests |
+| `internal/metrics/`       | The Prometheus metrics                                                                                                                                                                                                           |
+| `config/`                 | Generated CRDs, RBAC and the manager deployment (kustomize)                                                                                                                                                                      |
+| `demo/`                   | The demo: setup script, scenarios and the scripts behind the `justfile`                                                                                                                                                          |
+| `docs/decisions.md`       | The design decisions, the reasons behind them and the known limits                                                                                                                                                               |
+| `docs/thought_process.md` | My working notes while building it                                                                                                                                                                                               |
 
 The `Makefile` (kubebuilder's) builds, tests and deploys the operator; the `justfile` only drives the
 local demo.
@@ -166,6 +187,16 @@ Every choice above (why Jobs with init containers, why no retries, why the spec 
 these metrics) is explained in [docs/decisions.md](docs/decisions.md), together with the known
 limits: sequential jobs only, finished Jobs and pods are kept until the Pipeline is deleted, and
 templates are read when each job starts (not snapshotted).
+
+## How it was built
+
+The project was built in small steps, each one a pull request: the scaffold, the API types, the
+reconciler, observability, the integration tests, the demo and these docs. The
+[closed pull requests](https://github.com/MateusDSouza/k8s-pipeline-controller/pulls?q=is%3Apr+is%3Aclosed)
+and the [commit history](https://github.com/MateusDSouza/k8s-pipeline-controller/commits/main) show
+that order. [docs/thought_process.md](docs/thought_process.md) holds my working notes from the same
+time, kept as I wrote them: how I understood each part before implementing it, the errors I hit
+and how I fixed them.
 
 ## Troubleshooting
 

@@ -1,37 +1,35 @@
 # Demo
 
-Everything here exercises the controller on a local kind cluster. All commands run from the
-repo root through the [`justfile`](../justfile) (`just` lists them); the scripts in
-`demo/scripts/` also run directly.
+Everything here runs the controller on a local kind cluster. The commands run from the repo root
+through the [`justfile`](../justfile) (`just` lists them); the scripts in `scripts/` also run directly.
+What the operator does, the scenarios and the results are described in the [main README](../README.md).
 
 ```bash
-just check-tools      # go, docker, kind, kubectl, kubebuilder, just
-just cluster-up       # kind cluster + CRDs
-just controller       # terminal 1: the controller (metrics on :8080)
-just demo             # terminal 2: all scenarios at once, summary + metrics check
+./demo/setup.sh        # once: tools (asks first), kind cluster, CRDs
+just demo-live         # one screen: controller | metrics | the 7 scenarios | k9s
+just burst-live        # the same screen, with 50 pipelines at once
 ```
 
-## Scenarios
+## Commands
 
-`scenarios/templates.yaml` defines four reusable job templates: `build`, `test` and `deploy`
-succeed, `broken` exits with code 1. Each scenario file uses them. The names match the
-integration tests in `internal/controller/pipeline_scenarios_test.go`.
+| Command                                  | What it does                                                                                         |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `just cluster-up`                        | Create the kind cluster and install or update the CRDs (safe to re-run)                              |
+| `just controller`                        | Run the controller locally: metrics on `:8080`, JSON log also in `.dev/controller.log`               |
+| `just scenario [name]`                   | Run one scenario from `scenarios/` (no name: pick one with fzf)                                      |
+| `just demo`                              | Run all 7 scenarios at once, print the results, check the metrics against the statuses               |
+| `just burst [n]`                         | Create n pipelines at once (default 50), show the work queue draining, check each is counted once    |
+| `just demo-live` / `just burst-live [n]` | The demo or the burst on one tmux screen; resets and closes 30 s after the summary (`CLOSE_AFTER=n`) |
+| `just metrics` / `just metrics-watch`    | Pipelines started, finished by phase, duration and average                                           |
+| `just logs [pipeline]`                   | Every step's output of a pipeline, in order (no name: pick with fzf)                                 |
+| `just controller-logs`                   | Follow the controller's JSON log                                                                     |
+| `just reset`                             | Delete all pipelines (their Jobs and pods are garbage-collected)                                     |
+| `just cluster-down`                      | Delete the kind cluster                                                                              |
 
-| File | Pipeline(s) | Expected |
-| ---- | ----------- | -------- |
-| `01-one-job-ok` | one-job-ok | Succeeded |
-| `02-one-job-fail` | one-job-fail | Failed |
-| `03-two-jobs-ok` | two-jobs-ok | Succeeded |
-| `04-two-jobs-first-fails` | two-jobs-first-fails | Failed; deploy Skipped (never created) |
-| `05-three-jobs-second-fails` | three-jobs-second-fails | Failed; deploy Skipped |
-| `06-three-jobs-ok` | three-jobs-ok | Succeeded |
-| `07-parallel` | parallel-a, parallel-b | a Succeeded, b Failed in its second job |
+## Layout
 
-Run one with `just scenario <file name without .yaml>`, then `just logs <pipeline>` to see
-each step's output in order.
-
-## Observing
-
-- `just metrics` / `just metrics-watch`: started, finished by phase, duration (and average).
-- `just controller-logs`: the controller's JSON log; one `pipeline phase changed` line per transition.
-- `just demo-live`: controller log, live metrics and the demo side by side (needs `tmux`).
+| Path         | Contents                                                                                                                  |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| `setup.sh`   | One-time setup from a fresh clone                                                                                         |
+| `scenarios/` | `templates.yaml` (build, test, deploy succeed; broken exits 1) and the 7 scenario files, named like the integration tests |
+| `scripts/`   | One script per command; `lib.sh` holds the shared settings and helpers                                                    |
