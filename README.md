@@ -1,135 +1,178 @@
 # k8s-pipeline-controller
-// TODO(user): Add simple overview of use/purpose
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+A Kubernetes controller, built with [kubebuilder](https://book.kubebuilder.io/), that runs CI-style
+pipelines. You describe reusable jobs once (`PipelineJobTemplate`), list them in a `Pipeline`, and the
+controller runs them one after another as Kubernetes Jobs, stops at the first failure and reports
+progress in the Pipeline's status, Prometheus metrics and structured (JSON) logs.
 
-## Getting Started
+## Quick start (demo)
 
-### Prerequisites
-- go version v1.24.6+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
+Requirements: Docker running, and macOS with [Homebrew](https://brew.sh) for the automatic install.
+On Linux, install `go`, `kind`, `kubectl` and `just` yourself, plus `tmux` for `just demo-live`;
+`k9s` and `fzf` are optional (a live view in the demo screen, interactive pickers).
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
-
-```sh
-make docker-build docker-push IMG=<some-registry>/k8s-pipeline-controller:tag
+```bash
+chmod +x demo/setup.sh   # only if your clone lost the execute bit
+./demo/setup.sh          # installs missing tools (asks first), creates a kind cluster, installs the CRDs
+just demo-live           # one screen: controller log | live metrics | all scenarios | k9s
 ```
 
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
+`just demo-live` runs all seven scenarios below at once, prints a summary, checks the metrics against
+the pipeline statuses, then cleans up and closes itself after 30 seconds. `just` lists every command.
 
-**Install the CRDs into the cluster:**
+Step by step, in two terminals:
 
-```sh
-make install
+```bash
+just controller                        # terminal 1: run the controller locally (metrics on :8080)
+just scenario 04-two-jobs-first-fails  # terminal 2: one scenario (no name: pick one with fzf)
+just logs two-jobs-first-fails         # every step's output, in order
+just metrics                           # started / finished / duration
+just reset                             # delete all pipelines
+just cluster-down                      # delete the kind cluster
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+## The two resources
 
-```sh
-make deploy IMG=<some-registry>/k8s-pipeline-controller:tag
+A complete example, ready to apply while the controller runs (`just controller`):
+
+```bash
+kubectl apply -f - <<'EOF'
+apiVersion: ci.example.com/v1alpha1
+kind: PipelineJobTemplate          # a reusable job: an ordered list of steps (containers)
+metadata:
+  name: compile-and-package
+spec:
+  steps:
+    - name: compile                # steps share /workspace, so the next step sees this file
+      image: busybox:1.37
+      command: ["sh", "-c", "echo binary > /workspace/app && echo compiled"]
+    - name: package
+      image: busybox:1.37
+      command: ["sh", "-c", "ls /workspace && echo packaged"]
+---
+apiVersion: ci.example.com/v1alpha1
+kind: PipelineJobTemplate
+metadata:
+  name: ship
+spec:
+  steps:
+    - name: ship
+      image: busybox:1.37
+      command: ["sh", "-c", "echo shipped"]
+---
+apiVersion: ci.example.com/v1alpha1
+kind: Pipeline                     # an ordered list of jobs, each pointing to a template
+metadata:
+  name: release
+spec:
+  jobs:
+    - {name: build, templateRef: compile-and-package}
+    - {name: deploy, templateRef: ship}
+EOF
+
+kubectl get pipeline release -w    # Pending -> Running -> Succeeded
+just logs release                  # each step's output, in order
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
-
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
-
 ```sh
-kubectl apply -k config/samples/
+$ kubectl get pipelines
+NAME      PHASE       AGE
+release   Succeeded   40s
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+To write your own, put the same YAML in a file and `kubectl apply -f my-pipeline.yaml`; the templates
+in `demo/scenarios/templates.yaml` (`build`, `test`, `deploy`, `broken`) can be reused directly. A
+Pipeline's spec can't be changed, so to run it again: `kubectl delete pipeline release` and apply it
+again.
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+## How it runs
 
-```sh
-kubectl delete -k config/samples/
-```
+- **One Kubernetes Job per pipeline job**, named `<pipeline>-<index>-<job>`, owned by the Pipeline
+   (deleting the Pipeline deletes its Jobs and pods).
+- **Steps run in order inside one pod**: every step but the last is an init container, the last one is
+   the main container. They share an `emptyDir` mounted at `/workspace`, so a step can pass files to
+   the next.
+- **Jobs run sequentially.** Job *n+1* is created only after job *n* succeeded.
+- **Fail fast, no retries** (`backoffLimit: 0`): the first failing job marks the Pipeline `Failed`; the
+   jobs after it are reported as `Skipped` and never created.
+- **Status**: `status.phase` (`Pending` → `Running` → `Succeeded` / `Failed`), one entry per job in
+   `status.jobs` (phase, Job name, start and completion time), the pipeline's start and completion
+   time, and a `Ready` condition with a reason and message.
+- **Validation in the API** (CRD schema and CEL): at least one job and one step, unique names, at most
+   50 jobs, Job names within the 63-character limit, and the Pipeline spec is immutable (re-running
+   means creating a new Pipeline).
+- **Missing template**: the Pipeline waits (`Ready` reason `TemplateNotFound`) and is re-checked every
+   15 seconds, so creating the template later unblocks it.
 
-**Delete the APIs(CRDs) from the cluster:**
+## Scenarios
 
-```sh
-make uninstall
-```
+`demo/scenarios/templates.yaml` defines four templates: `build`, `test` and `deploy` succeed,
+`broken` exits with code 1. Each scenario has an integration test with the same name in
+`internal/controller/pipeline_scenarios_test.go`.
 
-**UnDeploy the controller from the cluster:**
+| Scenario                     | Jobs                    | Expected                                                  |
+| ---------------------------- | ----------------------- | --------------------------------------------------------- |
+| `01-one-job-ok`              | build                   | Succeeded                                                 |
+| `02-one-job-fail`            | broken                  | Failed                                                    |
+| `03-two-jobs-ok`             | build → test            | Succeeded                                                 |
+| `04-two-jobs-first-fails`    | broken → deploy         | Failed, deploy Skipped (its Job is never created)         |
+| `05-three-jobs-second-fails` | build → broken → deploy | Failed, deploy Skipped                                    |
+| `06-three-jobs-ok`           | build → test → deploy   | Succeeded                                                 |
+| `07-parallel`                | two pipelines at once   | parallel-a Succeeded, parallel-b Failed in its second job |
 
-```sh
-make undeploy
-```
+## Observability
 
-## Project Distribution
+Metrics on `/metrics` (`just metrics`, or `just metrics-watch` to refresh):
 
-Following the options to release and provide this solution to the users.
+| Metric                                          | Type      | Labels                      |
+| ----------------------------------------------- | --------- | --------------------------- |
+| `pipeline_controller_pipelines_started_total`   | counter   | none                        |
+| `pipeline_controller_pipelines_finished_total`  | counter   | `phase` (Succeeded, Failed) |
+| `pipeline_controller_pipeline_duration_seconds` | histogram | `phase`                     |
 
-### By providing a bundle with all YAML files
+Labels are kept low-cardinality on purpose (no pipeline names). Logs are JSON, one line per event,
+with the pipeline and the reconcile ID attached; each status change is a `pipeline phase changed`
+line with `from`, `to`, `reason` and `message` (`just controller-logs`). For human-readable local
+output, run the controller with `--zap-devel=true`.
 
-1. Build the installer for the image built and published in the registry:
+## Tests
 
-```sh
-make build-installer IMG=<some-registry>/k8s-pipeline-controller:tag
-```
+| Command         | What it covers                                                                                                                                                                                                                                                | Needs a cluster?             |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `make test`     | Unit tests (Job building, the decision logic, status, metrics) and integration tests: the seven scenarios above, run against a real API server ([envtest](https://book.kubebuilder.io/reference/envtest)) where the test plays the role of the Job controller | No                           |
+| `make lint`     | golangci-lint, the same check as CI                                                                                                                                                                                                                           | No                           |
+| `make test-e2e` | kubebuilder's end-to-end test: builds the image, deploys the manager to a kind cluster, checks it runs and serves metrics                                                                                                                                     | Creates its own kind cluster |
+| `just demo`     | The scenarios on a real cluster, with real pods, checked against the statuses and the metrics                                                                                                                                                                 | The demo cluster             |
 
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
+GitHub Actions runs `make lint`, `make test` and `make test-e2e` on every push and pull request.
 
-2. Using the installer
+## Repository layout
 
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
+| Path                   | Contents                                                                                                                                                                                                                         |
+| ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `api/v1alpha1/`        | The CRD types and their validation markers                                                                                                                                                                                       |
+| `internal/controller/` | The reconciler (`pipeline_controller.go`), split into building Jobs (`job_builder.go`), deciding the next action (`decide.go`), computing status (`status.go`) and recording transitions (`transitions.go`), each with its tests |
+| `internal/metrics/`    | The Prometheus metrics                                                                                                                                                                                                           |
+| `config/`              | Generated CRDs, RBAC and the manager deployment (kustomize)                                                                                                                                                                      |
+| `demo/`                | The demo: setup script, scenarios and the scripts behind the `justfile`                                                                                                                                                          |
+| `docs/decisions.md`    | The design decisions, the reasons behind them and the known limits                                                                                                                                                               |
 
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/k8s-pipeline-controller/<tag or branch>/dist/install.yaml
-```
+The `Makefile` (kubebuilder's) builds, tests and deploys the operator; the `justfile` only drives the
+local demo.
 
-### By providing a Helm Chart
+## Design decisions and known limits
 
-1. Build the chart using the optional helm plugin
+Every choice above (why Jobs with init containers, why no retries, why the spec is immutable, why
+these metrics) is explained in [docs/decisions.md](docs/decisions.md), together with the known
+limits: sequential jobs only, finished Jobs and pods are kept until the Pipeline is deleted, and
+templates are read when each job starts (not snapshotted).
 
-```sh
-kubebuilder edit --plugins=helm/v2-alpha
-```
+## Troubleshooting
 
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
-
-## License
-
-Copyright 2026.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
+| Problem                                              | Fix                                                                                                    |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `Docker is not running`                              | Start Docker Desktop (or `colima start`) and re-run                                                    |
+| Port 8080 or 8081 already in use                     | Another controller is still running: stop it (Ctrl+C); `just demo-live` stops an old one itself        |
+| `Unsupported value` or unknown fields when applying  | The CRDs in the cluster are outdated: `just cluster-up` reinstalls them                                |
+| A pipeline stays `Pending`                           | Its template is missing (`kubectl get pjt`), or the controller isn't running                           |
+| `make lint` fails locally with `export data version` | Your Go is newer than the linter supports: `GOTOOLCHAIN=go$(go mod edit -json \| jq -r .Go) make lint` |
