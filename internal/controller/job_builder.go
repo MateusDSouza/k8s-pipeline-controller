@@ -1,4 +1,4 @@
-//this file was not created by the scaffolding of kubebuilder, but I will let the same copyright here!
+// this file was not created by the scaffolding of kubebuilder, but I will let the same copyright here!
 /*
 Copyright 2026.
 

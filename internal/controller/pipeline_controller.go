@@ -58,7 +58,7 @@ func (r *PipelineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (c
 	if err := r.Get(ctx, req.NamespacedName, &p); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	if p.Status.Phase == civ1alpha1.PhaseSucceeded || p.Status.Phase == civ1alpha1.PhaseFailed { //In case the pipeline fail returns
+	if p.Status.Phase == civ1alpha1.PhaseSucceeded || p.Status.Phase == civ1alpha1.PhaseFailed { // In case the pipeline fail returns
 		return ctrl.Result{}, nil // finished: nothing more to do
 	}
 	before := p.DeepCopy()

@@ -92,7 +92,7 @@ func TestJobName_Length(t *testing.T) {
 
 // ---------- buildJob tests ----------
 
-//it is better to let here on top the main tested functions and the helpers bellow - personal preference
+// it is better to let here on top the main tested functions and the helpers bellow - personal preference
 
 // The Job gets the deterministic name, the Pipeline's namespace, and labels
 // that link it back to its Pipeline. The Pod gets the same labels.

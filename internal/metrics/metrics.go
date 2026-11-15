@@ -13,7 +13,7 @@ var (
 		Help: "Pipelines that started running.",
 	})
 
-	PipelinesFinished = prometheus.NewCounterVec(prometheus.CounterOpts{ //this is also a counter but grouped by the phase where they finish -> succeeded or failed
+	PipelinesFinished = prometheus.NewCounterVec(prometheus.CounterOpts{ // this is also a counter but grouped by the phase where they finish -> succeeded or failed
 		Name: "pipeline_controller_pipelines_finished_total",
 		Help: "Pipelines that finished, by final phase.",
 	}, []string{"phase"})
