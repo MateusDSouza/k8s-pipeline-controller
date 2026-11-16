@@ -208,20 +208,7 @@
 - **Why:** in table-driven tests, inline values (`"build"`, `"test"`) are what make each case readable.
   The rule still applies to all production code.
 
-## Known limits / next
-- **Finished pods and Jobs are never cleaned up** (in the demo, `just reset` removes them through
-  garbage collection). Simply adding `ttlSecondsAfterFinished` would be unsafe: the controller uses the
-  existing Jobs as the source of truth, so a deleted finished Job looks "missing" and would be created
-  and run again. A safe fix records each job's result in the status first, or cleans up only after the
-  whole pipeline has finished. For the same reason, deleting a running pipeline's Job by hand re-runs
-  that job.
-- **Missing template** is rechecked every 15 s; watching templates (and mapping them to the pipelines
-  that use them) would react immediately.
-- **Templates are read when each job starts**, not snapshotted when the pipeline starts: editing a
-  template during a run changes the jobs that haven't started yet.
-- **RBAC is only exercised when deployed in-cluster** (`make run` uses my kubeconfig). The scaffold's
-  e2e test deploys the manager and checks its metrics endpoint; an e2e scenario that runs a pipeline
-  in-cluster is the next step.
+## Known limits
 - **Sequential jobs only:** no parallel jobs or `dependsOn`-style graph (the challenge describes a
   sequence). All steps of a job run in one pod, on one node, with no per-step resources, timeout
   (`activeDeadlineSeconds`), security context or retries.

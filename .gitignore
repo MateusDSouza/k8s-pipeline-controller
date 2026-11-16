@@ -28,6 +28,3 @@ go.work
 
 # Kubeconfig might contain secrets
 *.kubeconfig
-
-#will be polished after the development finish
-docs/challenge/decisions.md
