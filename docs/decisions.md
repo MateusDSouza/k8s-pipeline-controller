@@ -19,8 +19,8 @@
 - **Options:** truncate + hash in code / limit it in the API.
 - **Choice:** CEL rule on the Pipeline: pipeline name + job name + 4 <= 63, with `MaxItems=50` on jobs
   (so the index is at most 2 digits).
-- **Why:** I prefer an explicit limit in the API over a workaround in the code; the user gets a clear
-  error at apply time. It also keeps the pipeline label value valid.
+- **Why:** an explicit limit in the API is preferable to a workaround in the code; the user gets a
+  clear error at apply time. It also keeps the pipeline label value valid.
 - **Trade-off:** long names are rejected instead of shortened.
 - **Found by:** a unit test (`TestJobName_Length`) before it ever reached a cluster.
 
@@ -53,7 +53,8 @@
   verified on kind (`just demo`, `just burst`).
 - **Layers:** unit tests for the pure functions, envtest for the reconciler against a real API server
   (7 scenarios, missing template, stale cache), and kubebuilder's e2e test, which deploys the manager
-  to kind. GitHub Actions runs lint, tests and e2e on every push and pull request.
+  to kind and was extended to run two pipelines in-cluster (see decision 26). GitHub Actions runs
+  lint, tests, e2e and govulncheck on every push and pull request.
 
 ## 10. Reconcile = observe → decide → act → report, with a pure decision function
 - **Choice:** `decide()` (in `decide.go`) gets the state of each existing Job and returns ONE action:
@@ -83,7 +84,7 @@
   (histogram).
 - **Why:** they answer traffic (started), errors (Failed), latency (duration). Job-level metrics
   already come from kube-state-metrics, controller health from controller-runtime's built-in metrics,
-  so I don't duplicate them (I removed a "jobs created" counter for that reason).
+  so they are not duplicated (a "jobs created" counter was removed for that reason).
 - **Labels:** only `phase` (low cardinality). No pipeline name as a label: it's unbounded and would
   create a new time series per pipeline. Per-pipeline details live in the status and the logs.
 - **Counters, not a "running now" gauge:** running = started − finished in PromQL, and counters stay
@@ -91,12 +92,12 @@
 
 ## 13. Logging: structured, contextual, JSON by default
 - **Choice:** logr + zap (kubebuilder default). controller-runtime passes each Reconcile a logger with
-  the controller, pipeline name/namespace and a unique `reconcileID`; my code adds key/value fields.
+  the controller, pipeline name/namespace and a unique `reconcileID`; the controller adds key/value fields.
   JSON by default (`Development: false` in `cmd/main.go`); `--zap-devel=true` for readable local output.
 - **What is logged:** events only: `created job` (job, index, template) and `pipeline phase changed`
   (from, to, reason, message). A reconcile where nothing changed logs nothing.
 - **Errors:** wrapped with context (`fmt.Errorf("create job %s: %w", ...)`) and returned;
-  controller-runtime logs them once and retries. My code doesn't log them again.
+  controller-runtime logs them once and retries. They are not logged a second time.
 - **Why JSON:** in production, log systems (Loki, Elasticsearch) filter by field, e.g. `to="Failed"`
   or all lines of one `reconcileID`, without fragile text parsing.
 
@@ -111,10 +112,10 @@
 
 ## 15. Status patches use an optimistic lock
 - **Problem:** `r.Get` reads from the informer cache, but the status patch goes straight to the API
-  server. Creating a Job triggers a new reconcile that can run before the cache has my last status
-  write: it saw the old phase and recorded `"" → Running` a second time (seen in the logs with two
+  server. Creating a Job triggers a new reconcile that can run before the cache has the controller's
+  last status write: it saw the old phase and recorded `"" → Running` a second time (seen in the logs with two
   reconcileIDs), overcounting `pipelines_started_total`.
-- **Choice:** the status patch carries the `resourceVersion` I read
+- **Choice:** the status patch carries the `resourceVersion` that was read
   (`client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{})`). If the object changed
   since, the API server answers Conflict: nothing is written or recorded, and the reconcile requeues
   after 1 s with fresh data. A Conflict is returned as a requeue, not an error: it's an expected race.
@@ -128,8 +129,8 @@
   `config/rbac/role.yaml`. Templates are read-only (get, list, watch); Jobs get create plus read;
   the status is written through `pipelines/status`.
 - **Why:** permissions sit beside the calls that need them and change with them. RBAC denies
-  everything by default, so a missing rule fails loudly in-cluster (the e2e test deploys the manager
-  with its real ServiceAccount).
+  everything by default, so a missing rule fails loudly in-cluster: the e2e test runs real pipelines
+  with the manager's own ServiceAccount, so a missing permission breaks CI, not a user's cluster.
 
 ## 17. Deployment defaults kept from kubebuilder
 - **Choice:** the manager runs as a Deployment from `config/` (kustomize): non-root, health probes on
@@ -144,9 +145,9 @@
   (build, test, lint, manifests, deploy). A `justfile` at the repo root owns **only the demo**
   (cluster, controller, scenarios, metrics, logs, cleanup). Scripts and scenarios live in `demo/`.
 - **Why:** the Makefile is generated by kubebuilder and may be regenerated by upgrades or plugins;
-  keeping the demo outside it means nothing of mine gets overwritten, and a reviewer who knows
+  keeping the demo outside it means no custom code gets overwritten, and a reviewer who knows
   kubebuilder finds the Makefile exactly as expected. The root shows the product; `demo/` shows
-  how I exercise it.
+  how it is exercised.
 - **Boundary:** demo scripts may *call* kubebuilder targets (`make install` for the CRDs,
   `make manifests generate` before running the controller) but never duplicate them.
 - **Why just:** clean arguments (`just scenario 04-two-jobs-first-fails`), `just --list` as a
@@ -208,10 +209,43 @@
 - **Why:** in table-driven tests, inline values (`"build"`, `"test"`) are what make each case readable.
   The rule still applies to all production code.
 
+## 26. An end-to-end test that runs pipelines in-cluster
+- **Choice:** the scaffold's e2e suite (build the image, deploy the manager to kind, check metrics) was
+  extended with one spec that applies the demo templates and two scenarios, `03-two-jobs-ok` and
+  `04-two-jobs-first-fails`, then checks the phases, the number of Jobs created, the `Skipped` job and
+  the JSON transition logs.
+- **Why:** it is the only test where the controller runs as a Deployment with its generated RBAC and
+  real pods run the steps. Unit tests and envtest can't catch a missing permission or a pod that never
+  starts.
+- **Separate namespace:** the manager's namespace enforces the `restricted` Pod Security Standard, and
+  the busybox step containers don't meet it (see Known limits), so the pipelines run in their own
+  namespace.
+- **Reuse:** the spec applies the same YAML files as the demo, so the integration tests, the demo and
+  the e2e test describe the same scenarios.
+
+## 27. Releases from tags, not from every merge
+- **Choice:** pushing a `v*` tag runs `.github/workflows/release.yml`: tests, a multi-arch image
+  (amd64, arm64) pushed to `ghcr.io`, `make build-installer` for a single `install.yaml`, and a GitHub
+  Release with notes generated from the merged pull requests.
+- **Why:** an operator is a product that other people install, so not every commit on `main` should
+  become something users run. A version tag is an explicit decision; `v0.1.0` marks the version
+  submitted for review.
+- **Trade-off:** the release job rebuilds the image from the tag instead of promoting an image already
+  tested on `main`, and it does not sign the image or attach an SBOM. Both are listed under Known
+  limits.
+
+## 28. Vulnerability scanning with govulncheck
+- **Choice:** `govulncheck` runs on every push and pull request.
+- **Why:** it reports only vulnerabilities in code the program actually calls, so a finding is worth
+  acting on. Its first run reported standard library issues in Go 1.26.0 and vulnerable versions of
+  `golang.org/x/net`, gRPC and OpenTelemetry (indirect dependencies); they were fixed by moving to
+  Go 1.26.11 and the patched module versions before the first release.
+
 ## Known limits
 - **Sequential jobs only:** no parallel jobs or `dependsOn`-style graph (the challenge describes a
   sequence). All steps of a job run in one pod, on one node, with no per-step resources, timeout
-  (`activeDeadlineSeconds`), security context or retries.
+  (`activeDeadlineSeconds`) or retries.
+- **Releases rebuild the image on the tag** instead of promoting the image tested on `main`.
 - **One reconcile worker** (controller-runtime's default): enough for the burst (the queue drains in
   seconds); `MaxConcurrentReconciles` could raise it for many more pipelines, safely, because one
   pipeline is never reconciled twice in parallel.

@@ -72,7 +72,7 @@ kubectl get pipeline release -w    # Pending -> Running -> Succeeded
 just logs release                  # each step's output, in order
 ```
 
-```console
+```sh
 $ kubectl get pipelines
 NAME      PHASE       AGE
 release   Succeeded   40s
@@ -86,21 +86,21 @@ again.
 ## How it runs
 
 - **One Kubernetes Job per pipeline job**, named `<pipeline>-<index>-<job>`, owned by the Pipeline
-  (deleting the Pipeline deletes its Jobs and pods).
+   (deleting the Pipeline deletes its Jobs and pods).
 - **Steps run in order inside one pod**: every step but the last is an init container, the last one is
-  the main container. They share an `emptyDir` mounted at `/workspace`, so a step can pass files to
-  the next.
+   the main container. They share an `emptyDir` mounted at `/workspace`, so a step can pass files to
+   the next.
 - **Jobs run sequentially.** Job *n+1* is created only after job *n* succeeded.
 - **Fail fast, no retries** (`backoffLimit: 0`): the first failing job marks the Pipeline `Failed`; the
-  jobs after it are reported as `Skipped` and never created.
+   jobs after it are reported as `Skipped` and never created.
 - **Status**: `status.phase` (`Pending` → `Running` → `Succeeded` / `Failed`), one entry per job in
-  `status.jobs` (phase, Job name, start and completion time), the pipeline's start and completion
-  time, and a `Ready` condition with a reason and message.
+   `status.jobs` (phase, Job name, start and completion time), the pipeline's start and completion
+   time, and a `Ready` condition with a reason and message.
 - **Validation in the API** (CRD schema and CEL): at least one job and one step, unique names, at most
-  50 jobs, Job names within the 63-character limit, and the Pipeline spec is immutable (re-running
-  means creating a new Pipeline).
+   50 jobs, Job names within the 63-character limit, and the Pipeline spec is immutable (re-running
+   means creating a new Pipeline).
 - **Missing template**: the Pipeline waits (`Ready` reason `TemplateNotFound`) and is re-checked every
-  15 seconds, so creating the template later unblocks it.
+   15 seconds, so creating the template later unblocks it.
 
 ## Scenarios
 
@@ -160,11 +160,12 @@ output, run the controller with `--zap-devel=true`.
 | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------- |
 | `make test`     | Unit tests (Job building, the decision logic, status, metrics) and integration tests: the seven scenarios above, run against a real API server ([envtest](https://book.kubebuilder.io/reference/envtest)) where the test plays the role of the Job controller | No                           |
 | `make lint`     | golangci-lint, the same check as CI                                                                                                                                                                                                                           | No                           |
-| `make test-e2e` | kubebuilder's end-to-end test: builds the image, deploys the manager to a kind cluster, checks it runs and serves metrics                                                                                                                                     | Creates its own kind cluster |
+| `make test-e2e` | Builds the image, deploys the manager to a kind cluster with its generated RBAC, checks the metrics endpoint, then runs two pipelines with real pods (sequencing, fail fast, `Skipped`)                                                                       | Creates its own kind cluster |
 | `just demo`     | The scenarios on a real cluster, with real pods, checked against the statuses and the metrics                                                                                                                                                                 | The demo cluster             |
 | `just burst`    | 50 pipelines at once; every one finishes and is counted exactly once                                                                                                                                                                                          | The demo cluster             |
 
-GitHub Actions runs `make lint`, `make test` and `make test-e2e` on every push and pull request.
+GitHub Actions runs `make lint`, `make test`, `make test-e2e` and `govulncheck` on every push and pull
+request. Pushing a `v*` tag publishes a release (see Install).
 
 ## Repository layout
 
@@ -176,17 +177,35 @@ GitHub Actions runs `make lint`, `make test` and `make test-e2e` on every push a
 | `config/`                 | Generated CRDs, RBAC and the manager deployment (kustomize)                                                                                                                                                                      |
 | `demo/`                   | The demo: setup script, scenarios and the scripts behind the `justfile`                                                                                                                                                          |
 | `docs/decisions.md`       | The design decisions, the reasons behind them and the known limits                                                                                                                                                               |
-| `docs/thought_process.md` | My working notes while building it                                                                                                                                                                                               |
+| `docs/thought_process.md` | Working notes written while building it                                                                                                                                                                                          |
+| `test/e2e/`               | The end-to-end test on kind                                                                                                                                                                                                      |
+| `.github/workflows/`      | CI (lint, tests, e2e, govulncheck) and the release workflow                                                                                                                                                                      |
 
 The `Makefile` (kubebuilder's) builds, tests and deploys the operator; the `justfile` only drives the
 local demo.
+
+## Install a release
+
+Each release publishes a multi-arch image on `ghcr.io` and a single `install.yaml` with the CRDs, RBAC
+and the controller Deployment:
+
+```bash
+kubectl apply -f https://github.com/MateusDSouza/k8s-pipeline-controller/releases/latest/download/install.yaml
+kubectl get pods -n k8s-pipeline-controller-system      # the controller-manager pod is Running
+kubectl apply -f demo/scenarios/templates.yaml -f demo/scenarios/03-two-jobs-ok.yaml
+kubectl get pipelines -w
+```
+
+Pipelines run in any namespace except ones that enforce the `restricted` Pod Security Standard (see
+the known limits). `v0.1.0` is the version submitted for review; later versions are listed under
+[Releases](https://github.com/MateusDSouza/k8s-pipeline-controller/releases).
 
 ## Design decisions and known limits
 
 Every choice above (why Jobs with init containers, why no retries, why the spec is immutable, why
 these metrics) is explained in [docs/decisions.md](docs/decisions.md), together with the known
-limits: sequential jobs only, finished Jobs and pods are kept until the Pipeline is deleted, and
-templates are read when each job starts (not snapshotted).
+limits: sequential jobs only, no security context on step containers, a single reconcile worker, and
+releases that rebuild the image on the tag.
 
 ## How it was built
 
@@ -194,9 +213,9 @@ The project was built in small steps, each one a pull request: the scaffold, the
 reconciler, observability, the integration tests, the demo and these docs. The
 [closed pull requests](https://github.com/MateusDSouza/k8s-pipeline-controller/pulls?q=is%3Apr+is%3Aclosed)
 and the [commit history](https://github.com/MateusDSouza/k8s-pipeline-controller/commits/main) show
-that order. [docs/thought_process.md](docs/thought_process.md) holds my working notes from the same
-time, kept as I wrote them: how I understood each part before implementing it, the errors I hit
-and how I fixed them.
+that order. [docs/thought_process.md](docs/thought_process.md) holds the working notes from the same
+time, kept as they were written: how each part was understood before it was implemented, the errors
+found along the way and how they were fixed.
 
 ## Troubleshooting
 
