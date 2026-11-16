@@ -270,15 +270,58 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
+		It("should run pipelines in the cluster: sequencing, fail-fast and Skipped", func() {
+			// A separate namespace: the manager's namespace enforces the "restricted" pod security
+			// policy, which the busybox step containers of the demo templates don't meet.
+			const ns = "e2e-pipelines"
+
+			By("creating a namespace for the pipelines")
+			_, err := utils.Run(exec.Command("kubectl", "create", "ns", ns))
+			Expect(err).NotTo(HaveOccurred(), "Failed to create the pipelines namespace")
+			DeferCleanup(func() {
+				_, _ = utils.Run(exec.Command("kubectl", "delete", "ns", ns, "--wait=false"))
+			})
+
+			By("applying the demo templates and two scenarios")
+			for _, f := range []string{"templates.yaml", "03-two-jobs-ok.yaml", "04-two-jobs-first-fails.yaml"} {
+				_, err = utils.Run(exec.Command("kubectl", "apply", "-n", ns,
+					"-f", filepath.Join("demo", "scenarios", f)))
+				Expect(err).NotTo(HaveOccurred(), "Failed to apply %s", f)
+			}
+
+			get := func(args ...string) func() (string, error) {
+				return func() (string, error) {
+					return utils.Run(exec.Command("kubectl", append([]string{"get", "-n", ns}, args...)...))
+				}
+			}
+			phase := func(name string) func() (string, error) {
+				return get("pipeline", name, "-o", "jsonpath={.status.phase}")
+			}
+			jobsOf := func(name string) []string {
+				out, err := get("jobs", "-l", "ci.example.com/pipeline="+name, "-o", "name")()
+				Expect(err).NotTo(HaveOccurred())
+				return utils.GetNonEmptyLines(out)
+			}
+
+			By("waiting for two-jobs-ok to succeed with real pods")
+			Eventually(phase("two-jobs-ok"), 3*time.Minute).Should(Equal("Succeeded"))
+			Expect(jobsOf("two-jobs-ok")).To(HaveLen(2), "both jobs should have run")
+
+			By("waiting for two-jobs-first-fails to fail fast")
+			Eventually(phase("two-jobs-first-fails"), 3*time.Minute).Should(Equal("Failed"))
+			Expect(jobsOf("two-jobs-first-fails")).To(HaveLen(1), "the job after the failure must never be created")
+			Expect(get("pipeline", "two-jobs-first-fails", "-o", "jsonpath={.status.jobs[1].phase}")()).
+				To(Equal("Skipped"))
+
+			By("checking the controller logged the transitions as JSON")
+			Eventually(func(g Gomega) {
+				logs, err := utils.Run(exec.Command("kubectl", "logs", controllerPodName, "-n", namespace))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(logs).To(ContainSubstring(`"msg":"pipeline phase changed"`))
+				g.Expect(logs).To(ContainSubstring(`"to":"Succeeded"`))
+				g.Expect(logs).To(ContainSubstring(`"to":"Failed"`))
+			}).Should(Succeed())
+		})
 	})
 })
 
