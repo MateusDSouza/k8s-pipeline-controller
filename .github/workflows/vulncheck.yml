@@ -1,8 +1,8 @@
 name: Vulncheck
 
-# Known vulnerabilities in the Go code and its dependencies that the code actually calls.
 on:
     push:
+        branches: [main]
     pull_request:
 
 permissions:
