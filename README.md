@@ -199,7 +199,7 @@ kubectl get pipelines -w
 To check a release end to end without touching your own cluster:
 
 ```bash
-VERSION=v0.2.0 ./demo/try-release.sh   # temporary kind cluster -> install the release -> run a pipeline -> delete everything
+./demo/try-release.sh   # temporary kind cluster -> install the release -> run a pipeline -> delete everything
 ```
 
 It needs only `docker`, `kind`, `kubectl` and `curl`, keeps the cluster's credentials in a temp

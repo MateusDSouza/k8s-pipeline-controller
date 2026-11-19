@@ -225,6 +225,7 @@
 
 ## 27. Releases from tags, not from every merge
 - Release check: demo/try-release.sh installs a published release on a throwaway kind cluster and runs a pipeline. It is run by hand; running it automatically before a release is marked as latest is the next step.
+- **Build time:** the first release compiled the arm64 image under QEMU emulation and took 57 min.Running the builder stage on the build platform (`FROM --platform=$BUILDPLATFORM`) and letting Go cross-compile with `GOARCH=$TARGETARCH` brought the whole workflow to under 8 min (v0.2.1), with the same images.
 
 ## 28. Vulnerability scanning with govulncheck
 - **Choice:** `govulncheck` runs on every push and pull request.
