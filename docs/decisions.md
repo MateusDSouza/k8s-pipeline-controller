@@ -135,7 +135,7 @@
 ## 17. Deployment defaults kept from kubebuilder
 - **Choice:** the manager runs as a Deployment from `config/` (kustomize): non-root, health probes on
   `:8081`, leader election (`--leader-elect`), metrics served over HTTPS with authentication and
-  authorization, and `--zap-encoder=json` set explicitly in `config/manager/manager.yaml`.
+  authorization, set explicitly in `config/manager/manager.yaml`.
 - **Why:** these are production-ready defaults; changing them would need a reason. Leader election
   makes two replicas safe (only the Lease holder reconciles). The local demo runs the controller with
   `--metrics-secure=false` on `:8080` so `curl` works.
@@ -224,15 +224,7 @@
   the e2e test describe the same scenarios.
 
 ## 27. Releases from tags, not from every merge
-- **Choice:** pushing a `v*` tag runs `.github/workflows/release.yml`: tests, a multi-arch image
-  (amd64, arm64) pushed to `ghcr.io`, `make build-installer` for a single `install.yaml`, and a GitHub
-  Release with notes generated from the merged pull requests.
-- **Why:** an operator is a product that other people install, so not every commit on `main` should
-  become something users run. A version tag is an explicit decision; `v0.1.0` marks the version
-  submitted for review.
-- **Trade-off:** the release job rebuilds the image from the tag instead of promoting an image already
-  tested on `main`, and it does not sign the image or attach an SBOM. Both are listed under Known
-  limits.
+- Release check: demo/try-release.sh installs a published release on a throwaway kind cluster and runs a pipeline. It is run by hand; running it automatically before a release is marked as latest is the next step.
 
 ## 28. Vulnerability scanning with govulncheck
 - **Choice:** `govulncheck` runs on every push and pull request.

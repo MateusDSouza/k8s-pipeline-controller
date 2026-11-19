@@ -74,8 +74,8 @@ just logs release                  # each step's output, in order
 
 ```sh
 $ kubectl get pipelines
-NAME      PHASE       AGE
-release   Succeeded   40s
+NAME      PHASE       STARTED   AGE
+release   Succeeded   40s       40s
 ```
 
 To write your own, put the same YAML in a file and `kubectl apply -f my-pipeline.yaml`; the templates
@@ -175,7 +175,7 @@ request. Pushing a `v*` tag publishes a release (see Install).
 | `internal/controller/`    | The reconciler (`pipeline_controller.go`), split into building Jobs (`job_builder.go`), deciding the next action (`decide.go`), computing status (`status.go`) and recording transitions (`transitions.go`), each with its tests |
 | `internal/metrics/`       | The Prometheus metrics                                                                                                                                                                                                           |
 | `config/`                 | Generated CRDs, RBAC and the manager deployment (kustomize)                                                                                                                                                                      |
-| `demo/`                   | The demo: setup script, scenarios and the scripts behind the `justfile`                                                                                                                                                          |
+| `demo/`                   | The demo: setup script, scenarios, the scripts behind the `justfile`, and `try-release.sh`                                                                                                                                       |
 | `docs/decisions.md`       | The design decisions, the reasons behind them and the known limits                                                                                                                                                               |
 | `docs/thought_process.md` | Working notes written while building it                                                                                                                                                                                          |
 | `test/e2e/`               | The end-to-end test on kind                                                                                                                                                                                                      |
@@ -195,6 +195,16 @@ kubectl get pods -n k8s-pipeline-controller-system      # the controller-manager
 kubectl apply -f demo/scenarios/templates.yaml -f demo/scenarios/03-two-jobs-ok.yaml
 kubectl get pipelines -w
 ```
+
+To check a release end to end without touching your own cluster:
+
+```bash
+VERSION=v0.2.0 ./demo/try-release.sh   # temporary kind cluster -> install the release -> run a pipeline -> delete everything
+```
+
+It needs only `docker`, `kind`, `kubectl` and `curl`, keeps the cluster's credentials in a temp
+folder (your kubeconfig is not changed) and exits with an error if the pipeline doesn't succeed.
+`KEEP=1` keeps the cluster to look around.
 
 Pipelines run in any namespace except ones that enforce the `restricted` Pod Security Standard (see
 the known limits). `v0.1.0` is the version submitted for review; later versions are listed under
@@ -219,10 +229,11 @@ found along the way and how they were fixed.
 
 ## Troubleshooting
 
-| Problem                                              | Fix                                                                                                    |
-| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `Docker is not running`                              | Start Docker Desktop (or `colima start`) and re-run                                                    |
-| Port 8080 or 8081 already in use                     | Another controller is still running: stop it (Ctrl+C); `just demo-live` stops an old one itself        |
-| `Unsupported value` or unknown fields when applying  | The CRDs in the cluster are outdated: `just cluster-up` reinstalls them                                |
-| A pipeline stays `Pending`                           | Its template is missing (`kubectl get pjt`), or the controller isn't running                           |
-| `make lint` fails locally with `export data version` | Your Go is newer than the linter supports: `GOTOOLCHAIN=go$(go mod edit -json \| jq -r .Go) make lint` |
+| Problem                                                         | Fix                                                                                                                          |
+| --------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `Docker is not running`                                         | Start Docker Desktop (or `colima start`) and re-run                                                                          |
+| Port 8080 or 8081 already in use                                | Another controller is still running: stop it (Ctrl+C); `just demo-live` stops an old one itself                              |
+| `Unsupported value` or unknown fields when applying             | The CRDs in the cluster are outdated: `just cluster-up` reinstalls them                                                      |
+| A pipeline stays `Pending`                                      | Its template is missing (`kubectl get pjt`), or the controller isn't running                                                 |
+| `make lint` fails locally with `export data version`            | Your Go is newer than the linter supports: `GOTOOLCHAIN=go$(go mod edit -json \| jq -r .Go) make lint`                       |
+| Controller pod in `ImagePullBackOff` after installing a release | The cluster can't pull `ghcr.io/mateusdsouza/k8s-pipeline-controller`: check network access to ghcr.io (the image is public) |
